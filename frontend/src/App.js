@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Play, Square, Download, Settings, CheckCircle, XCircle, Upload, FolderOpen, Wifi, Database, Trash2, Camera, Monitor, Globe, Radio, ChevronDown, Clock, Zap } from 'lucide-react';
+import { Play, Square, Download, Settings, CheckCircle, XCircle, Upload, FolderOpen, Wifi, Database, Trash2, Camera, Monitor, Globe, Radio, ChevronDown, Clock, Zap, Video } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
@@ -36,6 +36,10 @@ function App() {
   const [uploading, setUploading] = useState(false);
   const [importing, setImporting] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [uploadingVideo, setUploadingVideo] = useState(false);
+  const [videoUploadError, setVideoUploadError] = useState('');
+  const [videoFrameInterval, setVideoFrameInterval] = useState(2);
+  const [videoSnapshotCount, setVideoSnapshotCount] = useState(0);
 
   // New navigation states
   const [selectedSource, setSelectedSource] = useState('rtsp');
@@ -115,6 +119,7 @@ function App() {
   
   const wsRef = useRef(null);
   const fileInputRef = useRef(null);
+  const videoInputRef = useRef(null);
 
   useEffect(() => {
     wsRef.current = new WebSocket(WS_URL);
@@ -350,6 +355,37 @@ function App() {
       alert('Error uploading files: ' + error.message);
     } finally {
       setUploading(false);
+    }
+  };
+
+  const handleVideoUpload = async (file) => {
+    if (!file) return;
+    setVideoUploadError('');
+    setUploadingVideo(true);
+    const formData = new FormData();
+    formData.append('video', file);
+    formData.append('frameInterval', String(videoFrameInterval));
+    if (sessionId) formData.append('sessionId', sessionId);
+    try {
+      const response = await fetch(`${API_URL}/api/upload-video`, {
+        method: 'POST',
+        body: formData
+      });
+      const data = await response.json();
+      if (data.success) {
+        setSessionId(data.sessionId);
+        setVideoSnapshotCount(data.snapshotCount || 0);
+        setSnapshots(Array(data.snapshotCount || 0).fill(null).map((_, i) => ({
+          url: `${API_URL}/snapshots/${data.sessionId}/frame-${String(i + 1).padStart(4, '0')}.jpg`,
+          timestamp: Date.now() + i
+        })));
+      } else {
+        setVideoUploadError(data.message || 'Upload failed');
+      }
+    } catch (error) {
+      setVideoUploadError(error.message || 'Upload failed');
+    } finally {
+      setUploadingVideo(false);
     }
   };
 
@@ -1019,6 +1055,7 @@ function App() {
                 {selectedSource === 'rtmp' && <><Radio className="w-4 h-4" /> RTMP Stream</>}
                 {selectedSource === 'screen' && <><Monitor className="w-4 h-4" /> Screen Capture</>}
                 {selectedSource === 'upload' && <><Upload className="w-4 h-4" /> Upload Photos</>}
+                {selectedSource === 'video_upload' && <><Video className="w-4 h-4" /> Upload Video</>}
                 {selectedSource === 'import' && <><FolderOpen className="w-4 h-4" /> Import from Path</>}
                 <ChevronDown className="w-4 h-4" />
               </button>
@@ -1066,6 +1103,13 @@ function App() {
                   >
                     <Upload className="w-4 h-4" />
                     Upload Photos
+                  </button>
+                  <button
+                    onClick={() => { setSelectedSource('video_upload'); setSourceDropdownOpen(false); }}
+                    className="w-full px-4 py-2 text-left hover:bg-slate-600 text-slate-100 flex items-center gap-2"
+                  >
+                    <Video className="w-4 h-4" />
+                    Upload Video
                   </button>
                   <button
                     onClick={() => { setSelectedSource('import'); setSourceDropdownOpen(false); }}
@@ -2398,6 +2442,179 @@ function App() {
                     <Download className="w-5 h-5 inline mr-2" />
                     Download Video
                   </a>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Upload Video Tab Content */}
+          {!showSessions && selectedSource === 'video_upload' && (
+            <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 border border-white/20">
+              <h2 className="text-xl font-semibold text-white mb-4 flex items-center gap-2">
+                <Video className="w-5 h-5" />
+                Upload Video
+              </h2>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-white mb-2">Frame interval (seconds)</label>
+                  <input
+                    type="number"
+                    min="0.5"
+                    step="0.5"
+                    value={videoFrameInterval}
+                    onChange={(e) => setVideoFrameInterval(Math.max(0.5, parseFloat(e.target.value) || 2))}
+                    className="w-full px-4 py-2 bg-white/5 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Capture one frame every N seconds (max 300 frames)</p>
+                </div>
+
+                <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
+                  <Video className="w-12 h-12 mx-auto text-gray-400 mb-4" />
+                  <p className="text-white mb-2">Select a video file to create a short timelapse</p>
+                  <p className="text-sm text-gray-400 mb-4">MP4, WebM, MOV, AVI, MKV, M4V (max 500MB)</p>
+                  <input
+                    ref={videoInputRef}
+                    type="file"
+                    accept=".mp4,.webm,.mov,.avi,.mkv,.m4v,video/*"
+                    onChange={(e) => {
+                      const f = e.target.files && e.target.files[0];
+                      if (f) handleVideoUpload(f);
+                      e.target.value = '';
+                    }}
+                    className="hidden"
+                  />
+                  <button
+                    onClick={() => videoInputRef.current?.click()}
+                    disabled={uploadingVideo}
+                    className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white rounded-lg"
+                  >
+                    {uploadingVideo ? 'Uploading & extracting frames...' : 'Select Video'}
+                  </button>
+                </div>
+
+                {videoUploadError && (
+                  <p className="text-sm text-red-400">{videoUploadError}</p>
+                )}
+
+                {videoSnapshotCount >= 2 && (
+                  <>
+                    <p className="text-white">Extracted {videoSnapshotCount} frames from video.</p>
+                    <div>
+                      <label className="block text-sm font-medium text-white mb-2">Output Format</label>
+                      <select
+                        value={outputFormat}
+                        onChange={(e) => setOutputFormat(e.target.value)}
+                        className="w-full px-4 py-2 bg-gray-800 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      >
+                        <option value="mp4">MP4 Video</option>
+                        <option value="gif">GIF Animation</option>
+                      </select>
+                    </div>
+                    <div className="space-y-4">
+                      <button
+                        type="button"
+                        onClick={() => setAdvancedExpanded(!advancedExpanded)}
+                        className="w-full flex items-center justify-between px-4 py-2 bg-white/5 border border-white/20 rounded-lg text-white hover:bg-white/10 transition-colors"
+                      >
+                        <span className="text-sm font-medium">Advanced Options</span>
+                        <ChevronDown className={`w-4 h-4 transition-transform ${advancedExpanded ? 'transform rotate-180' : ''}`} />
+                      </button>
+                      {advancedExpanded && (
+                        <div className="space-y-4 p-4 bg-white/5 border border-white/20 rounded-lg">
+                          <div>
+                            <label className="block text-sm font-medium text-white mb-2">Timelapse FPS</label>
+                            <input
+                              type="number"
+                              value={fps}
+                              onChange={(e) => setFps(Math.max(1, Math.min(60, parseInt(e.target.value) || 30)))}
+                              min="1"
+                              max="60"
+                              className="w-full px-4 py-2 bg-white/5 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium text-white mb-2">Resolution Scale</label>
+                            <select
+                              value={resolutionScale}
+                              onChange={(e) => setResolutionScale(e.target.value)}
+                              className="w-full px-4 py-2 bg-gray-800 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            >
+                              <option value="original">Original</option>
+                              <option value="4k">4K UltraHD (3840x2160)</option>
+                              <option value="1080p">1080p (1920x1080)</option>
+                              <option value="720p">720p (1280x720)</option>
+                              <option value="480p">480p (854x480)</option>
+                              <option value="360p">360p (640x360)</option>
+                            </select>
+                          </div>
+                          {outputFormat === 'gif' && (
+                            <>
+                              <div>
+                                <label className="block text-sm font-medium text-white mb-2">GIF Framerate</label>
+                                <input
+                                  type="number"
+                                  value={gifFps}
+                                  onChange={(e) => setGifFps(Math.max(1, Math.min(30, parseInt(e.target.value) || 10)))}
+                                  min="1"
+                                  max="30"
+                                  className="w-full px-4 py-2 bg-white/5 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-sm font-medium text-white mb-2">GIF Colors</label>
+                                <select
+                                  value={gifColors}
+                                  onChange={(e) => setGifColors(Number(e.target.value))}
+                                  className="w-full px-4 py-2 bg-gray-800 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                >
+                                  <option value="256">256</option>
+                                  <option value="128">128</option>
+                                  <option value="64">64</option>
+                                  <option value="32">32</option>
+                                  <option value="16">16</option>
+                                  <option value="8">8</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-sm font-medium text-white mb-2">GIF Dithering</label>
+                                <select
+                                  value={gifDither}
+                                  onChange={(e) => setGifDither(e.target.value)}
+                                  className="w-full px-4 py-2 bg-gray-800 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                >
+                                  <option value="floyd_steinberg">Floyd-Steinberg</option>
+                                  <option value="bayer">Bayer</option>
+                                  <option value="sierra2">Sierra2</option>
+                                  <option value="sierra2_4a">Sierra2-4a</option>
+                                  <option value="none">None</option>
+                                </select>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <div className="text-center text-white">
+                      <p className="text-sm">Total frames: {videoSnapshotCount}</p>
+                    </div>
+                    <button
+                      onClick={generateTimelapse}
+                      disabled={videoSnapshotCount < 2 || processing}
+                      className="w-full px-6 py-3 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold rounded-lg transition-colors"
+                    >
+                      {processing ? 'Processing...' : 'Generate Timelapse'}
+                    </button>
+                    {videoUrl && sessionId && (
+                      <a
+                        href={`${API_URL}/api/download/video/${sessionId}`}
+                        className="block w-full px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg text-center transition-colors"
+                      >
+                        <Download className="w-5 h-5 inline mr-2" />
+                        Download Video
+                      </a>
+                    )}
+                  </>
                 )}
               </div>
             </div>
