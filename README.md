@@ -14,6 +14,7 @@ Transform camera streams, uploaded photos, and MQTT-triggered captures into time
 - **RTMP Streams** - Live streaming from RTMP sources
 - **Screen Capture** - Desktop and application window recording
 - **Photo Upload** - Drag-and-drop interface for uploading image collections
+- **Video Upload** - Upload a video file (MP4, WebM, MOV, AVI, MKV) to produce a short timelapse
 - **Network Import** - Import photos from network paths and shared folders
 - **MQTT Triggers** - Capture photos from any source based on MQTT message transitions (1→0)
 
@@ -99,6 +100,13 @@ The application provides multiple ways to create timelapses:
 3. **Supported formats**: JPEG, PNG, GIF (max 10MB each)
 4. **Preview uploaded images** in the gallery
 5. **Generate timelapse** from your photo collection
+
+### 🎥 **Upload Video**
+1. **Switch to "Upload Video"** in the source dropdown
+2. **Set frame interval** (seconds) — e.g. 2 = one frame every 2 seconds (max 300 frames)
+3. **Select a video file** — MP4, WebM, MOV, AVI, MKV, M4V (max 500MB)
+4. The app **extracts frames** from the video and creates a session
+5. **Generate timelapse** (MP4 or GIF) and download the short timelapse video
 
 ### 📁 **Network Import**
 1. **Switch to "Import from Path" tab**
@@ -429,6 +437,7 @@ networks:
 
 ### 📸 **Photo Management**
 - `POST /api/upload-photos` - Upload multiple photos with drag-and-drop
+- `POST /api/upload-video` - Upload a video file; extracts frames and creates a session for timelapse (body: `video` file, optional `frameInterval` in seconds, optional `sessionId`)
 - `POST /api/import-from-path` - Import photos from network path
 - `GET /api/session/:id` - Get session details and snapshots
 
@@ -484,6 +493,9 @@ MAX_TOTAL_STORAGE_MB=1024
 MAX_SESSION_STORAGE_MB=100
 DEFAULT_RETENTION_DAYS=7
 
+# Video Upload (optional, default 500)
+VIDEO_UPLOAD_LIMIT_MB=500
+
 # Photo Import Path (optional)
 IMPORT_PARENT_PATH=/mnt/photo_import
 ```
@@ -505,6 +517,7 @@ IMPORT_PARENT_PATH=/mnt/photo_import
 ### ✅ **Completed Features**
 - [x] **Database Integration** - SQLite database with session tracking
 - [x] **Photo Upload** - Drag-and-drop interface with thumbnails
+- [x] **Video Upload** - Upload video file to extract frames and output short timelapse
 - [x] **Network Import** - Import from network paths
 - [x] **MQTT Triggers** - Message-based photo capture from any video source
 - [x] **Storage Management** - Quotas, cleanup, and session management
