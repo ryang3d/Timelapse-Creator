@@ -498,6 +498,31 @@ const upload = multer({
   }
 });
 
+// Video upload: temp dir then move to session dir after session creation
+const VIDEO_UPLOAD_LIMIT_MB = parseInt(process.env.VIDEO_UPLOAD_LIMIT_MB || '500', 10);
+const MAX_FRAMES = 300;
+const videoTempDir = path.join(snapshotsDir, '_temp_video');
+if (!fs.existsSync(videoTempDir)) fs.mkdirSync(videoTempDir, { recursive: true });
+
+const videoUploadStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, videoTempDir),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase() || '.mp4';
+    cb(null, `upload-${uuidv4()}${ext}`);
+  }
+});
+
+const videoUpload = multer({
+  storage: videoUploadStorage,
+  fileFilter: (req, file, cb) => {
+    const allowedExt = /\.(mp4|webm|mov|avi|mkv|m4v)$/;
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowedExt.test(ext)) return cb(null, true);
+    cb(new Error('Only video files (MP4, WebM, MOV, AVI, MKV, M4V) are allowed'));
+  },
+  limits: { fileSize: VIDEO_UPLOAD_LIMIT_MB * 1024 * 1024 }
+});
+
 const wss = new WebSocket.Server({ port: WS_PORT });
 
 wss.on('connection', (ws) => {
@@ -1561,6 +1586,145 @@ app.post('/api/upload-photos', upload.array('photos', 50), async (req, res) => {
     console.error('Error uploading photos:', error);
     res.status(500).json({ success: false, message: 'Upload failed' });
   }
+});
+
+// Video upload: extract frames and create session for timelapse
+function getVideoMetadata(filePath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(filePath, (err, data) => {
+      if (err) return reject(err);
+      const format = data.format || {};
+      const videoStream = (data.streams || []).find(s => s.codec_type === 'video');
+      const duration = parseFloat(format.duration);
+      if (!Number.isFinite(duration) || duration <= 0) {
+        return reject(new Error('Could not get video duration or duration is invalid'));
+      }
+      resolve({
+        durationSeconds: duration,
+        width: videoStream && videoStream.width,
+        height: videoStream && videoStream.height
+      });
+    });
+  });
+}
+
+function extractFramesFromVideo(inputPath, sessionDir, frameInterval, maxFrames, durationSeconds) {
+  return new Promise((resolve, reject) => {
+    const fps = Math.min(1 / frameInterval, maxFrames / durationSeconds);
+    const outputPattern = path.join(sessionDir, 'frame-%04d.jpg');
+    const command = ffmpeg(inputPath)
+      .outputOptions([
+        '-vf', `fps=${fps}`,
+        '-q:v', '2',
+        '-y'
+      ])
+      .output(outputPattern);
+    command
+      .on('end', () => {
+        const files = fs.readdirSync(sessionDir)
+          .filter(f => /^frame-\d{4}\.jpg$/.test(f))
+          .sort();
+        resolve(files);
+      })
+      .on('error', (err) => reject(err))
+      .run();
+  });
+}
+
+app.post('/api/upload-video', videoUpload.single('video'), async (req, res) => {
+  const tempFile = req.file && req.file.path;
+  const frameInterval = Math.max(0.5, parseFloat(req.body.frameInterval) || 2);
+  const sessionId = (req.body.sessionId && req.body.sessionId.trim()) || uuidv4();
+  const originalFileName = req.file && req.file.originalname ? path.basename(req.file.originalname) : 'video';
+
+  if (!tempFile || !fs.existsSync(tempFile)) {
+    return res.status(400).json({ success: false, message: 'No video file uploaded' });
+  }
+
+  const sessionDir = path.join(snapshotsDir, sessionId);
+  let metadata;
+  let savedVideoPath;
+  try {
+    const quotaCheck = checkQuotaBeforeCapture(sessionId);
+    if (!quotaCheck.success) {
+      fs.unlinkSync(tempFile);
+      return res.status(400).json({ success: false, message: quotaCheck.message, quotaExceeded: true });
+    }
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const ext = path.extname(tempFile).toLowerCase() || '.mp4';
+    savedVideoPath = path.join(sessionDir, `uploaded-video${ext}`);
+    fs.renameSync(tempFile, savedVideoPath);
+    metadata = await getVideoMetadata(savedVideoPath);
+  } catch (err) {
+    if (tempFile && fs.existsSync(tempFile)) try { fs.unlinkSync(tempFile); } catch (e) {}
+    if (sessionDir && fs.existsSync(sessionDir)) try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (e) {}
+    console.error('Upload video setup error:', err);
+    const message = err.message || 'Failed to process uploaded video';
+    return res.status(400).json({ success: false, message });
+  }
+
+  const sessionData = {
+    id: sessionId,
+    source_type: 'video_file',
+    source_config: { frameInterval, originalFileName },
+    rtsp_url: null,
+    interval_seconds: 0,
+    duration_seconds: null,
+    use_timer: false
+  };
+  try {
+    db.createSession(sessionData);
+  } catch (err) {
+    if (sessionDir && fs.existsSync(sessionDir)) try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (e) {}
+    console.error('Create session error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to create session' });
+  }
+
+  let frameFiles;
+  try {
+    frameFiles = await extractFramesFromVideo(
+      savedVideoPath,
+      sessionDir,
+      frameInterval,
+      MAX_FRAMES,
+      metadata.durationSeconds
+    );
+  } catch (err) {
+    db.deleteSession(sessionId);
+    if (sessionDir && fs.existsSync(sessionDir)) try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (e) {}
+    console.error('Frame extraction error:', err);
+    return res.status(500).json({ success: false, message: 'Frame extraction failed: ' + (err.message || 'Unknown error') });
+  }
+
+  for (const filename of frameFiles) {
+    const fullPath = path.join(sessionDir, filename);
+    let fileSize = 0;
+    try {
+      fileSize = fs.statSync(fullPath).size;
+    } catch (e) {}
+    const relativePath = `/snapshots/${sessionId}/${filename}`;
+    db.addSnapshot(sessionId, relativePath, {
+      file_size: fileSize,
+      width: metadata.width,
+      height: metadata.height
+    });
+  }
+
+  if (frameFiles.length < 2) {
+    db.deleteSession(sessionId);
+    if (sessionDir && fs.existsSync(sessionDir)) try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (e) {}
+    return res.status(400).json({
+      success: false,
+      message: 'Video produced fewer than 2 frames. Try a longer video or a larger frame interval.'
+    });
+  }
+
+  res.json({
+    success: true,
+    sessionId,
+    snapshotCount: frameFiles.length,
+    durationSeconds: metadata.durationSeconds
+  });
 });
 
 // New API endpoint to list child directories
