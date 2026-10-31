@@ -177,6 +177,9 @@ function fetchFrigateCameras(apiUrl, { rtspHost = '', token = '' } = {}) {
         path: '/api/config',
         method: 'GET',
         headers,
+        // Self-hosted Frigate public ports (e.g. 8971) commonly serve a
+        // self-signed certificate; the internal 5000 path is the default.
+        rejectUnauthorized: url.protocol === 'https:' ? false : undefined,
       },
       (res) => {
         let data = '';
