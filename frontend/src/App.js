@@ -2039,6 +2039,7 @@ function App() {
                           <option key={camera.name} value={camera.name}>
                             {camera.name}
                             {camera.enabled ? ' [Enabled]' : ' [Disabled]'}
+                            {camera.authMasked ? ' [add credentials in URL]' : ''}
                           </option>
                         ))}
                       </select>
@@ -3123,6 +3124,7 @@ function App() {
                                 <option key={camera.name} value={camera.name}>
                                   {camera.name}
                                   {camera.enabled ? ' [Enabled]' : ' [Disabled]'}
+                                  {camera.authMasked ? ' [add credentials in URL]' : ''}
                                 </option>
                               ))}
                             </select>
