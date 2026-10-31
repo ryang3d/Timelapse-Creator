@@ -32,12 +32,14 @@ services:
       - MQTT_PASSWORD=${MQTT_PASSWORD:-}
       - FRIGATE_API_URL=${FRIGATE_API_URL:-http://frigate:5000}
       - FRIGATE_RTSP_HOST=${FRIGATE_RTSP_HOST:-frigate:8554}
+      - FRIGATE_API_TOKEN=${FRIGATE_API_TOKEN:-}
     # NEW: Privileged mode for device access
     privileged: true
     restart: unless-stopped
     networks:
       - rtsp-network
       - frigate_default
+      - primary_net
     deploy:
       resources:
         reservations:
@@ -60,6 +62,7 @@ services:
     restart: unless-stopped
     networks:
       - rtsp-network
+      - primary_net
 
 volumes:
   snapshots_data:
@@ -70,3 +73,6 @@ networks:
     driver: bridge
   frigate_default:
     external: true
+  primary_net:
+    external: true
+    name: primary_net

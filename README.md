@@ -136,6 +136,7 @@ The application integrates with [Frigate](https://frigate.video/) to automatical
    - Configure the `frigate_default` external network in `docker-compose.yml` (see Advanced Configuration)
    - Set `FRIGATE_API_URL` environment variable (defaults to `http://frigate:5000`)
    - Optionally set `FRIGATE_RTSP_HOST` if Frigate RTSP streams use a different host
+   - Set `FRIGATE_API_TOKEN` when pointing `FRIGATE_API_URL` at Frigate's public API port (8971). The internal port (5000) needs no token.
 
 2. **Using Frigate Cameras (Regular Capture):**
    - In the RTSP Stream Capture tab, expand the "Load from Frigate" section
@@ -158,6 +159,11 @@ The application integrates with [Frigate](https://frigate.video/) to automatical
    - If `FRIGATE_RTSP_HOST` is set, RTSP URLs from Frigate will be transformed to use the specified host
    - Useful when Frigate runs in Docker and RTSP streams need to be accessed from the host network
    - Format: `host:port` or just `host` (e.g., `frigate:8554` or `192.168.1.100:8554`)
+
+6. **Frigate version support:**
+   - Frigate 0.14+ (verified against 0.18.x and 0.19-dev API shape)
+   - Cameras are discovered from `GET /api/config`; the record-role ffmpeg input (go2rtc restream) is preferred for capture.
+   - Cameras whose stream URL has Frigate-masked credentials (`*:*@` userinfo) are flagged in the UI as needing a manual credential entry.
 
 ### 🎬 **Timelapse Generation**
 1. **Choose your output format**:
