@@ -1,0 +1,428 @@
+{
+  "version": "0.18-0",
+  "cameras": {
+    "front_doorbell": {
+      "enabled": true,
+      "ffmpeg": {
+        "path": "default",
+        "global_args": [
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-threads",
+          "2"
+        ],
+        "hwaccel_args": "preset-nvidia-h264",
+        "input_args": "preset-rtsp-generic",
+        "output_args": {
+          "detect": [
+            "-threads",
+            "2",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv420p"
+          ],
+          "record": "preset-record-generic-audio-aac"
+        },
+        "retry_interval": 10,
+        "apple_compatibility": false,
+        "gpu": 0,
+        "inputs": [
+          {
+            "path": "rtsp://127.0.0.1:8554/front_doorbell",
+            "roles": [
+              "record",
+              "detect"
+            ],
+            "global_args": [],
+            "hwaccel_args": [],
+            "input_args": "preset-rtsp-restream-low-latency"
+          }
+        ]
+      },
+      "detect": {
+        "enabled": true,
+        "height": 576,
+        "width": 720,
+        "fps": 5,
+        "min_initialized": 2,
+        "max_disappeared": 25,
+        "stationary": {
+          "interval": 50,
+          "threshold": 50,
+          "max_frames": {
+            "objects": {}
+          },
+          "classifier": true
+        },
+        "annotation_offset": 0
+      },
+      "onvif": {
+        "host": "",
+        "port": 8000,
+        "tls_insecure": false,
+        "autotracking": {
+          "enabled": false,
+          "calibrate_on_startup": false,
+          "zooming": "disabled",
+          "zoom_factor": 0.3,
+          "track": [
+            "person"
+          ],
+          "required_zones": [],
+          "return_preset": "home",
+          "timeout": 10,
+          "movement_weights": [],
+          "enabled_in_config": false
+        },
+        "ignore_time_mismatch": false
+      }
+    },
+    "front_yard": {
+      "enabled": true,
+      "ffmpeg": {
+        "path": "default",
+        "global_args": [
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-threads",
+          "2"
+        ],
+        "hwaccel_args": "preset-nvidia-h264",
+        "input_args": "preset-rtsp-generic",
+        "output_args": {
+          "detect": [
+            "-threads",
+            "2",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv420p"
+          ],
+          "record": "preset-record-generic-audio-aac"
+        },
+        "retry_interval": 10,
+        "apple_compatibility": false,
+        "gpu": 0,
+        "inputs": [
+          {
+            "path": "rtsp://127.0.0.1:8554/front_yard",
+            "roles": [
+              "record"
+            ],
+            "global_args": [],
+            "hwaccel_args": [],
+            "input_args": "preset-rtsp-restream-low-latency"
+          },
+          {
+            "path": "rtsp://192.168.1.154:8554/360p",
+            "roles": [
+              "detect"
+            ],
+            "global_args": [],
+            "hwaccel_args": [],
+            "input_args": []
+          }
+        ]
+      },
+      "detect": {
+        "enabled": true,
+        "height": 360,
+        "width": 640,
+        "fps": 5,
+        "min_initialized": 2,
+        "max_disappeared": 25,
+        "stationary": {
+          "interval": 50,
+          "threshold": 50,
+          "max_frames": {
+            "objects": {}
+          },
+          "classifier": true
+        },
+        "annotation_offset": 0
+      },
+      "onvif": {
+        "host": "",
+        "port": 8000,
+        "tls_insecure": false,
+        "autotracking": {
+          "enabled": false,
+          "calibrate_on_startup": false,
+          "zooming": "disabled",
+          "zoom_factor": 0.3,
+          "track": [
+            "person"
+          ],
+          "required_zones": [],
+          "return_preset": "home",
+          "timeout": 10,
+          "movement_weights": [],
+          "enabled_in_config": false
+        },
+        "ignore_time_mismatch": false
+      }
+    },
+    "garage": {
+      "enabled": true,
+      "ffmpeg": {
+        "path": "default",
+        "global_args": [
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-threads",
+          "2"
+        ],
+        "hwaccel_args": "preset-nvidia-h264",
+        "input_args": "preset-rtsp-generic",
+        "output_args": {
+          "detect": [
+            "-threads",
+            "2",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv420p"
+          ],
+          "record": "preset-record-generic-audio-aac"
+        },
+        "retry_interval": 10,
+        "apple_compatibility": false,
+        "gpu": 0,
+        "inputs": [
+          {
+            "path": "rtsp://127.0.0.1:8554/garage",
+            "roles": [
+              "record",
+              "detect"
+            ],
+            "global_args": [],
+            "hwaccel_args": [],
+            "input_args": "preset-rtsp-restream-low-latency"
+          }
+        ]
+      },
+      "detect": {
+        "enabled": true,
+        "height": 480,
+        "width": 640,
+        "fps": 5,
+        "min_initialized": 2,
+        "max_disappeared": 25,
+        "stationary": {
+          "interval": 50,
+          "threshold": 50,
+          "max_frames": {
+            "objects": {}
+          },
+          "classifier": true
+        },
+        "annotation_offset": 0
+      },
+      "onvif": {
+        "host": "192.168.1.215",
+        "port": 80,
+        "user": "admin",
+        "password": "__FRIGATE_SAVED_CREDENTIAL__",
+        "tls_insecure": false,
+        "autotracking": {
+          "enabled": false,
+          "calibrate_on_startup": false,
+          "zooming": "disabled",
+          "zoom_factor": 0.3,
+          "track": [
+            "person"
+          ],
+          "required_zones": [],
+          "return_preset": "home",
+          "timeout": 10,
+          "movement_weights": [],
+          "enabled_in_config": false
+        },
+        "ignore_time_mismatch": false
+      }
+    },
+    "driveway-2": {
+      "enabled": true,
+      "ffmpeg": {
+        "path": "default",
+        "global_args": [
+          "-hide_banner",
+          "-loglevel",
+          "warning",
+          "-threads",
+          "2"
+        ],
+        "hwaccel_args": "preset-nvidia-h264",
+        "input_args": "preset-rtsp-generic",
+        "output_args": {
+          "detect": [
+            "-threads",
+            "2",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv420p"
+          ],
+          "record": "preset-record-generic-audio-copy"
+        },
+        "retry_interval": 10,
+        "apple_compatibility": false,
+        "gpu": 0,
+        "inputs": [
+          {
+            "path": "rtsp://127.0.0.1:8554/driveway-2?timeout=15",
+            "roles": [
+              "record"
+            ],
+            "global_args": [],
+            "hwaccel_args": [],
+            "input_args": "preset-rtsp-restream-low-latency"
+          },
+          {
+            "path": "rtsp://192.168.1.93:8554/360p",
+            "roles": [
+              "detect"
+            ],
+            "global_args": [],
+            "hwaccel_args": [],
+            "input_args": []
+          }
+        ]
+      },
+      "detect": {
+        "enabled": true,
+        "height": 360,
+        "width": 640,
+        "fps": 5,
+        "min_initialized": 2,
+        "max_disappeared": 25,
+        "stationary": {
+          "interval": 50,
+          "threshold": 50,
+          "max_frames": {
+            "objects": {}
+          },
+          "classifier": true
+        },
+        "annotation_offset": 0
+      },
+      "onvif": {
+        "host": "",
+        "port": 8000,
+        "tls_insecure": false,
+        "autotracking": {
+          "enabled": false,
+          "calibrate_on_startup": false,
+          "zooming": "disabled",
+          "zoom_factor": 0.3,
+          "track": [
+            "person"
+          ],
+          "required_zones": [],
+          "return_preset": "home",
+          "timeout": 10,
+          "movement_weights": [],
+          "enabled_in_config": false
+        },
+        "ignore_time_mismatch": false
+      }
+    }
+  },
+  "go2rtc": {
+    "streams": {
+      "front_doorbell": [
+        "rtsp://*:*@192.168.1.44:554/cam/realmonitor?channel=1&subtype=0#timeout=30#backchannel=0"
+      ],
+      "front_doorbell_twoway": [
+        "rtsp://*:*@192.168.1.44:554/cam/realmonitor?channel=1&subtype=0#timeout=30#backchannel=1",
+        "ffmpeg:front_doorbell_twoway#audio=opus"
+      ],
+      "front_yard": [
+        "rtsp://192.168.1.154:8554/1080p?mp4#timeout=30",
+        "ffmpeg:front_yard#audio=opus"
+      ],
+      "front_porch_cam": [
+        "rtsp://192.168.1.133:8554/1080p?mp4#timeout=30",
+        "ffmpeg:front_porch_cam#audio=opus"
+      ],
+      "back_yard_3": [
+        "rtsp://192.168.1.78:8554/1080p?mp4#timeout=30",
+        "ffmpeg:back_yard_3#audio=opus"
+      ],
+      "street_side_yard_2": [
+        "rtsp://192.168.1.127:8554/1080p?mp4#timeout=30",
+        "ffmpeg:street_side_yard_2#audio=opus"
+      ],
+      "back_patio": [
+        "rtsp://192.168.1.188:8554/1080p?mp4#timeout=30",
+        "ffmpeg:back_patio#audio=opus"
+      ],
+      "garage": [
+        "rtsp://*:*@192.168.1.215:554/cam/realmonitor?channel=1&subtype=0#timeout=30",
+        "ffmpeg:garage#audio=opus"
+      ],
+      "garage_sub": [
+        "rtsp://*:*@192.168.1.215:554/cam/realmonitor?channel=1&subtype=1#timeout=30",
+        "ffmpeg:garage#audio=opus"
+      ],
+      "rear_entry": [
+        "rtsp://*:*@192.168.1.108:554/cam/realmonitor?channel=1&subtype=0#timeout=30",
+        "ffmpeg:rear_entry#audio=opus"
+      ],
+      "rear_entry_sub": [
+        "rtsp://*:*@192.168.1.108:554/cam/realmonitor?channel=1&subtype=1#timeout=30",
+        "ffmpeg:rear_entry#audio=opus"
+      ],
+      "garage_side_yard": [
+        "rtsp://192.168.1.109:8554/1080p?mp4#timeout=30",
+        "ffmpeg:garage_side_yard#audio=opus"
+      ],
+      "garage_side_yard_2": [
+        "rtsp://192.168.1.178:8554/1080p?mp4#timeout=30",
+        "ffmpeg:garage_side_yard_2#audio=opus"
+      ],
+      "back-yard-floodlight": [
+        "rtsp://192.168.1.81:8554/1080p?mp4#timeout=30",
+        "ffmpeg:back-yard-floodlight#audio=opus"
+      ],
+      "back-yard-2": [
+        "rtsp://192.168.1.26:8554/1080p?mp4#timeout=30",
+        "ffmpeg:back-yard-2#audio=opus"
+      ],
+      "street-side-yard-floodlight": [
+        "rtsp://192.168.1.145:8554/1080p?mp4#timeout=30",
+        "ffmpeg:street-side-yard-floodlight#audio=opus"
+      ],
+      "driveway": [
+        "rtsp://192.168.1.191:8554/1080p?mp4#timeout=30",
+        "ffmpeg:driveway#audio=opus"
+      ],
+      "driveway-2": [
+        "rtsp://192.168.1.93:8554/1080p?mp4#timeout=30",
+        "ffmpeg:driveway#audio=opus"
+      ],
+      "street-cam-1": [
+        "rtsp://192.168.1.211:8554/1080p?mp4#timeout=30",
+        "ffmpeg:street-cam-1#audio=opus"
+      ],
+      "street-cam-2": [
+        "rtsp://192.168.1.50:8554/1080p?mp4#timeout=30",
+        "ffmpeg:street-cam-2#audio=opus"
+      ],
+      "crib-cam": [
+        "rtsp://192.168.1.40:8554/1080p?mp4#timeout=30",
+        "ffmpeg:crib-cam#audio=opus"
+      ]
+    },
+    "webrtc": {
+      "candidates": [
+        "192.168.1.97:8555",
+        "stun:8555"
+      ]
+    }
+  }
+}
