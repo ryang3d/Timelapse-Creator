@@ -13,6 +13,7 @@ const archiver = require('archiver');
 const http = require('http');
 const https = require('https');
 const DatabaseManager = require('./db');
+const { fetchFrigateCameras } = require('./frigate');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -534,206 +535,6 @@ function broadcast(data) {
   wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
       client.send(JSON.stringify(data));
-    }
-  });
-}
-
-// Helper function to replace localhost addresses in RTSP URLs
-function replaceRtspHost(rtspUrl) {
-  if (!rtspUrl || !FRIGATE_RTSP_HOST) {
-    return rtspUrl;
-  }
-
-  let replacedUrl = rtspUrl;
-
-  // Replace rtsp://127.0.0.1:port/path or rtsp://localhost:port/path
-  // Match the full rtsp://host:port/path pattern
-  const rtspPattern = /rtsp:\/\/(?:127\.0\.0\.1|localhost)(?::(\d+))?(\/[^?\s]*)?/gi;
-  replacedUrl = replacedUrl.replace(rtspPattern, (match, port, path) => {
-    // If FRIGATE_RTSP_HOST includes port, use it directly
-    if (FRIGATE_RTSP_HOST.includes(':')) {
-      return `rtsp://${FRIGATE_RTSP_HOST}${path || ''}`;
-    } else {
-      // Otherwise, preserve the original port or add default
-      const replacementPort = port ? `:${port}` : '';
-      return `rtsp://${FRIGATE_RTSP_HOST}${replacementPort}${path || ''}`;
-    }
-  });
-
-  // Also handle cases where 127.0.0.1 or localhost appear without rtsp:// prefix
-  // (e.g., in go2rtc stream configurations)
-  replacedUrl = replacedUrl.replace(/127\.0\.0\.1(:\d+)?/g, (match) => {
-    const portMatch = match.match(/:(\d+)/);
-    if (FRIGATE_RTSP_HOST.includes(':')) {
-      // If replacement host has port, use it entirely
-      return FRIGATE_RTSP_HOST;
-    } else {
-      // Preserve port from original if present
-      return portMatch ? `${FRIGATE_RTSP_HOST}${portMatch[0]}` : FRIGATE_RTSP_HOST;
-    }
-  });
-
-  replacedUrl = replacedUrl.replace(/localhost(:\d+)?/g, (match) => {
-    const portMatch = match.match(/:(\d+)/);
-    if (FRIGATE_RTSP_HOST.includes(':')) {
-      return FRIGATE_RTSP_HOST;
-    } else {
-      return portMatch ? `${FRIGATE_RTSP_HOST}${portMatch[0]}` : FRIGATE_RTSP_HOST;
-    }
-  });
-
-  return replacedUrl;
-}
-
-// Frigate API client function
-async function fetchFrigateCameras(apiUrl) {
-  return new Promise((resolve, reject) => {
-    try {
-      // Parse URL
-      const url = new URL(apiUrl);
-      const isHttps = url.protocol === 'https:';
-      const client = isHttps ? https : http;
-      
-      const options = {
-        hostname: url.hostname,
-        port: url.port || (isHttps ? 443 : 80),
-        path: '/api/config',
-        method: 'GET'
-      };
-
-      const req = client.request(options, (res) => {
-        let data = '';
-
-        res.on('data', (chunk) => {
-          data += chunk;
-        });
-
-        res.on('end', () => {
-          try {
-            if (res.statusCode !== 200) {
-              reject(new Error(`Frigate API returned status ${res.statusCode}`));
-              return;
-            }
-
-            const config = JSON.parse(data);
-            const cameras = [];
-
-            // Extract cameras from Frigate config
-            if (config.cameras) {
-              for (const [cameraName, cameraConfig] of Object.entries(config.cameras)) {
-                const camera = {
-                  name: cameraName,
-                  enabled: cameraConfig.enabled !== false, // Default to true if not specified
-                  rtspUrl: null,
-                  resolution: null,
-                  width: null,
-                  height: null
-                };
-
-                // Extract RTSP URL - prioritize record stream over detect stream
-                // In Frigate, streams are identified by their roles: 'detect' for detection and 'record' for recording
-                if (cameraConfig.ffmpeg?.inputs) {
-                  const inputs = cameraConfig.ffmpeg.inputs;
-                  
-                  // First, look for an input with the 'record' role
-                  let recordInput = null;
-                  for (const input of inputs) {
-                    if (input?.roles && Array.isArray(input.roles) && input.roles.includes('record') && input.path) {
-                      recordInput = input;
-                      break;
-                    }
-                  }
-                  
-                  if (recordInput) {
-                    // Use the input with the record role
-                    camera.rtspUrl = recordInput.path;
-                  } else if (inputs.length > 1) {
-                    // No explicit record role found, fallback: use the last input (typically the record stream)
-                    // The first input is usually the detect/sub stream for lower resolution detection
-                    for (let i = inputs.length - 1; i >= 0; i--) {
-                      if (inputs[i]?.path) {
-                        camera.rtspUrl = inputs[i].path;
-                        break;
-                      }
-                    }
-                  } else if (inputs.length === 1 && inputs[0]?.path) {
-                    // Single input (legacy or simple config)
-                    camera.rtspUrl = inputs[0].path;
-                  }
-                } else if (cameraConfig.rtsp) {
-                  // Direct RTSP config
-                  camera.rtspUrl = cameraConfig.rtsp;
-                } else if (cameraConfig.go2rtc?.streams) {
-                  // go2rtc streams - look for main stream or use the first available
-                  const streams = cameraConfig.go2rtc.streams;
-                  
-                  // Check for explicit main stream
-                  if (streams.main && typeof streams.main === 'string') {
-                    camera.rtspUrl = streams.main;
-                  } else if (streams.sub && typeof streams.sub === 'string') {
-                    // If only sub exists, we'll use it but log a warning
-                    camera.rtspUrl = streams.sub;
-                  } else {
-                    // Fallback: get first stream value
-                    const streamValues = Object.values(streams);
-                    for (const stream of streamValues) {
-                      if (typeof stream === 'string') {
-                        camera.rtspUrl = stream;
-                        break;
-                      }
-                    }
-                  }
-                }
-
-                // Replace localhost addresses with user-configured host if RTSP URL exists
-                if (camera.rtspUrl) {
-                  camera.rtspUrl = replaceRtspHost(camera.rtspUrl);
-                }
-
-                // Extract resolution/width/height
-                if (cameraConfig.ffmpeg?.output_args?.record) {
-                  const recordArgs = cameraConfig.ffmpeg.output_args.record;
-                  const widthMatch = recordArgs.match(/-width\s+(\d+)/);
-                  const heightMatch = recordArgs.match(/-height\s+(\d+)/);
-                  if (widthMatch) camera.width = parseInt(widthMatch[1]);
-                  if (heightMatch) camera.height = parseInt(heightMatch[1]);
-                }
-                
-                // Check detect section for width/height
-                if (cameraConfig.detect) {
-                  if (cameraConfig.detect.width) camera.width = cameraConfig.detect.width;
-                  if (cameraConfig.detect.height) camera.height = cameraConfig.detect.height;
-                }
-
-                // Set resolution string if we have width/height
-                if (camera.width && camera.height) {
-                  camera.resolution = `${camera.width}x${camera.height}`;
-                }
-
-                cameras.push(camera);
-              }
-            }
-
-            resolve(cameras);
-          } catch (parseError) {
-            reject(new Error(`Failed to parse Frigate config: ${parseError.message}`));
-          }
-        });
-      });
-
-      req.on('error', (error) => {
-        reject(new Error(`Failed to connect to Frigate API: ${error.message}`));
-      });
-
-      // Set timeout
-      req.setTimeout(10000, () => {
-        req.destroy();
-        reject(new Error('Frigate API request timeout'));
-      });
-
-      req.end();
-    } catch (error) {
-      reject(new Error(`Invalid Frigate API URL: ${error.message}`));
     }
   });
 }
@@ -2326,7 +2127,10 @@ app.get('/api/frigate/cameras', async (req, res) => {
       });
     }
 
-    const cameras = await fetchFrigateCameras(apiUrl);
+    const cameras = await fetchFrigateCameras(apiUrl, {
+      rtspHost: FRIGATE_RTSP_HOST,
+      token: process.env.FRIGATE_API_TOKEN || ''
+    });
     
     res.json({
       success: true,
