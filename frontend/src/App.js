@@ -5,6 +5,18 @@ import { v4 as uuidv4 } from 'uuid';
 const API_URL = process.env.REACT_APP_API_URL || '';
 const WS_URL = process.env.REACT_APP_WS_URL || (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.hostname + ':3002';
 
+// Parse a fetch response as JSON, with a descriptive error when the body is
+// not JSON (e.g. an nginx 413/502 HTML error page), instead of the cryptic
+// "Unexpected token '<'" that raw response.json() throws.
+const parseApiResponse = async (response) => {
+  const text = await response.text();
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch (err) {
+    throw new Error(`Server responded ${response.status} ${response.statusText || '(no status)'}, expected JSON: ${text.slice(0, 200)}`);
+  }
+};
+
 function App() {
   const [url, setUrl] = useState('');
   const [isCapturing, setIsCapturing] = useState(false);
@@ -200,7 +212,7 @@ function App() {
         body: JSON.stringify({ url })
       });
 
-      const data = await response.json();
+      const data = await parseApiResponse(response);
       setConnectionStatus(data.success ? 'success' : 'error');
     } catch (error) {
       setConnectionStatus('error');
@@ -256,7 +268,7 @@ function App() {
         })
       });
 
-      const data = await response.json();
+      const data = await parseApiResponse(response);
 
       if (data.success) {
         setSessionId(data.sessionId);
@@ -279,7 +291,7 @@ function App() {
         body: JSON.stringify({ sessionId })
       });
 
-      const data = await response.json();
+      const data = await parseApiResponse(response);
       if (data.success) setIsCapturing(false);
     } catch (error) {
       alert('Error stopping capture: ' + error.message);
@@ -309,7 +321,7 @@ function App() {
         })
       });
 
-      const data = await response.json();
+      const data = await parseApiResponse(response);
 
       if (!data.success) {
         alert('Failed to generate timelapse');
@@ -339,7 +351,7 @@ function App() {
         body: formData
       });
 
-      const data = await response.json();
+      const data = await parseApiResponse(response);
       
       if (data.success) {
         setSessionId(data.sessionId);
@@ -371,7 +383,7 @@ function App() {
         method: 'POST',
         body: formData
       });
-      const data = await response.json();
+      const data = await parseApiResponse(response);
       if (data.success) {
         setSessionId(data.sessionId);
         setVideoSnapshotCount(data.snapshotCount || 0);
@@ -393,7 +405,7 @@ function App() {
     setLoadingDirectories(true);
     try {
       const response = await fetch(`${API_URL}/api/list-child-directories?parentPath=${encodeURIComponent(parentPath || '')}`);
-      const data = await response.json();
+      const data = await parseApiResponse(response);
 
       if (data.success) {
         // If we get a defaultParentPath and current path is empty, use it
@@ -442,7 +454,7 @@ function App() {
         })
       });
 
-      const data = await response.json();
+      const data = await parseApiResponse(response);
 
       if (data.success) {
         setSessionId(data.sessionId);
@@ -507,7 +519,7 @@ function App() {
         body: JSON.stringify({ url: rtspUrlToTest })
       });
 
-      const data = await response.json();
+      const data = await parseApiResponse(response);
       setMqttConnectionStatus(data.success ? 'success' : 'error');
     } catch (error) {
       setMqttConnectionStatus('error');
@@ -590,7 +602,7 @@ function App() {
         })
       });
 
-      const data = await response.json();
+      const data = await parseApiResponse(response);
 
       if (data.success) {
         setSessionId(data.sessionId);
@@ -612,7 +624,7 @@ function App() {
         body: JSON.stringify({ sessionId })
       });
 
-      const data = await response.json();
+      const data = await parseApiResponse(response);
       if (data.success) {
         setMqttConnected(false);
         setMqttTesting(false);
@@ -627,7 +639,7 @@ function App() {
     setLoadingSessions(true);
     try {
       const response = await fetch(`${API_URL}/api/sessions`);
-      const data = await response.json();
+      const data = await parseApiResponse(response);
       
       if (data.success) {
         setSessions(data.sessions);
@@ -642,7 +654,7 @@ function App() {
   const loadStorageStats = async () => {
     try {
       const response = await fetch(`${API_URL}/api/storage-stats`);
-      const data = await response.json();
+      const data = await parseApiResponse(response);
       
       if (data.success) {
         setStorageStats(data.stats);
@@ -656,7 +668,7 @@ function App() {
     try {
       // Fetch session details including snapshots
       const response = await fetch(`${API_URL}/api/session/${session.id}`);
-      const data = await response.json();
+      const data = await parseApiResponse(response);
       
       if (data.success) {
         // Set session ID
@@ -733,7 +745,7 @@ function App() {
     
     try {
       const response = await fetch(`${API_URL}/api/session/${sessionId}/videos`);
-      const data = await response.json();
+      const data = await parseApiResponse(response);
       
       if (data.success && Array.isArray(data.videos)) {
         const videoList = data.videos.map(video => ({
@@ -773,7 +785,7 @@ function App() {
     
     try {
       const response = await fetch(`${API_URL}/api/session/${sessionId}`);
-      const data = await response.json();
+      const data = await parseApiResponse(response);
       
       console.log('Session data loaded for', sessionId, ':', data); // Debug log
       
@@ -812,7 +824,7 @@ function App() {
         body: JSON.stringify({ sessionId })
       });
 
-      const data = await response.json();
+      const data = await parseApiResponse(response);
       if (data.success) {
         await loadSessions();
         await loadStorageStats();
@@ -835,7 +847,7 @@ function App() {
         method: 'DELETE'
       });
 
-      const data = await response.json();
+      const data = await parseApiResponse(response);
       if (data.success) {
         await loadSessions();
         await loadStorageStats();
@@ -858,7 +870,7 @@ function App() {
         method: 'POST'
       });
 
-      const data = await response.json();
+      const data = await parseApiResponse(response);
       if (data.success) {
         await loadSessions();
         await loadStorageStats();
@@ -897,7 +909,7 @@ function App() {
   const loadMqttTopics = async () => {
     try {
       const res = await fetch(`${API_URL}/api/mqtt-topics`);
-      const data = await res.json();
+      const data = await parseApiResponse(res);
       if (data.success) {
         setMqttAvailableTopics(data.topics || []);
         setMqttTopicTree(data.topicTree || {});
@@ -911,7 +923,7 @@ function App() {
   useEffect(() => {
     if (selectedTrigger === 'mqtt' || activeTab === 'mqtt') {
       fetch(`${API_URL}/api/mqtt-config`)
-        .then(res => res.json())
+        .then(parseApiResponse)
         .then(data => {
           if (data.success && data.config) {
             // Only populate fields that are empty (or default for port) and have config values
@@ -975,7 +987,7 @@ function App() {
     setLoadingDevices(true);
     try {
       const response = await fetch(`${API_URL}/api/list-devices`);
-      const data = await response.json();
+      const data = await parseApiResponse(response);
 
       if (data.success) {
         setAvailableDevices(data.devices);
@@ -994,7 +1006,7 @@ function App() {
     try {
       const apiUrlParam = frigateApiUrl ? `?apiUrl=${encodeURIComponent(frigateApiUrl)}` : '';
       const response = await fetch(`${API_URL}/api/frigate/cameras${apiUrlParam}`);
-      const data = await response.json();
+      const data = await parseApiResponse(response);
 
       if (data.success) {
         setFrigateCameras(data.cameras || []);
