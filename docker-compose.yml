@@ -53,10 +53,10 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - REACT_APP_API_URL=${REACT_APP_API_URL:-http://localhost:3001}
-        - REACT_APP_WS_URL=${REACT_APP_WS_URL:-ws://localhost:3002}
+        - REACT_APP_API_URL=${REACT_APP_API_URL:-}
+        - REACT_APP_WS_URL=${REACT_APP_WS_URL:-}
     ports:
-      - "3000:80"
+      - "3011:80"
     depends_on:
       - backend
     restart: unless-stopped

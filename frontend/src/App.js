@@ -2,8 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Play, Square, Download, Settings, CheckCircle, XCircle, Upload, FolderOpen, Wifi, Database, Trash2, Camera, Monitor, Globe, Radio, ChevronDown, Clock, Zap, Video } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
-const WS_URL = process.env.REACT_APP_WS_URL || 'ws://localhost:3002';
+const API_URL = process.env.REACT_APP_API_URL || '';
+const WS_URL = process.env.REACT_APP_WS_URL || (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.hostname + ':3002';
 
 function App() {
   const [url, setUrl] = useState('');
