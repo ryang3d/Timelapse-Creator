@@ -2359,7 +2359,7 @@ async function cleanupOrphanedFiles() {
 }
 
 // Schedule cleanup to run every hour
-cron.schedule('0 * * * *', () => {
+const cronJob = cron.schedule('0 * * * *', () => {
   console.log('Running scheduled cleanup...');
   cleanupOldSessions();
   cleanupOrphanedFiles();
@@ -2588,10 +2588,18 @@ app.get('/api/download/photos/:sessionId', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    version: process.env.APP_VERSION || 'dev',
+    timestamp: new Date().toISOString(),
+  });
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on http://0.0.0.0:${PORT}`);
-  console.log(`WebSocket server running on ws://0.0.0.0:${WS_PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
+    console.log(`WebSocket server running on ws://0.0.0.0:${WS_PORT}`);
+  });
+}
+
+module.exports = { app, wss, cronJob };
