@@ -1,0 +1,38 @@
+# Optional overrides for hardware access and Frigate network integration.
+# Use together with the main file:
+#   docker compose -f docker-compose.yml -f docker-compose.advanced.yml up -d
+# Adjust device paths to match your host (check with: ls /dev/video* /dev/dri).
+services:
+  backend:
+    privileged: true
+    devices:
+      - /dev/video0:/dev/video0
+      - /dev/video1:/dev/video1
+      - /dev/video2:/dev/video2
+      - /dev/dri:/dev/dri
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    environment:
+      DISPLAY: ":0"
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+    networks:
+      - frigate_default
+      - primary_net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+  frontend:
+    networks:
+      - primary_net
+
+networks:
+  frigate_default:
+    external: true
+  primary_net:
+    external: true
+    name: primary_net

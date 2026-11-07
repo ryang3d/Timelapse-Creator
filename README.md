@@ -3,6 +3,8 @@
 Transform camera streams, uploaded photos, and MQTT-triggered captures into timelapse videos with a comprehensive web interface.
 
 ![alt text](./images/screenshot1.png)
+[![CI](https://github.com/ryang3d/Timelapse-Creator/actions/workflows/ci.yml/badge.svg)](https://github.com/ryang3d/Timelapse-Creator/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ## Features
 
@@ -36,43 +38,69 @@ Transform camera streams, uploaded photos, and MQTT-triggered captures into time
 
 ### Prerequisites
 
-- Docker (20.10+)
-- Docker Compose (1.29+)
+- Docker (20.10+) with the Compose plugin (`docker compose version`)
+- Nothing else: the official images are published to GHCR, no build required
 
 ### Deployment
 
 1. **Clone and navigate to the project:**
    ```bash
-   git clone https://git.rg3d.me/rg3d/RTSP-Timelapse-Creator
-   cd RTSP-Timelapse-Creator
+   git clone https://github.com/ryang3d/Timelapse-Creator.git
+   cd Timelapse-Creator
    ```
 
-2. **Configure the hostname:**
-   
-   Edit `docker-compose.yml` and update the frontend build args to match your server's hostname or IP:
-   ```yaml
-   frontend:
-     build:
-       args:
-         - REACT_APP_API_URL=http://YOUR_HOSTNAME:3001
-         - REACT_APP_WS_URL=ws://YOUR_HOSTNAME:3002
-   ```
-
-3. **Start the application:**
+2. **Start the application:**
    ```bash
-   docker compose up -d --build
+   docker compose up -d
+   ```
+   First run pulls the official images and creates the `./data/` directory
+   (snapshots, videos, database, photo import).
+
+3. **Access the web interface:**
+   ```
+   http://YOUR_HOSTNAME:3011
    ```
 
-4. **Access the web interface:**
-   ```
-   http://YOUR_HOSTNAME:3000
-   ```
+4. **(Optional) Configure MQTT or Frigate** by copying `docker-compose.yml`'s
+   environment block from `.env.example` into a `.env` file in the same
+   directory, then `docker compose up -d` again.
 
 ### Ports
 
-- `3000` - Frontend web interface
-- `3001` - Backend API
-- `3002` - WebSocket server
+- `3011` - Frontend web interface (nginx; also proxies /api, /snapshots, /videos)
+- `3001` - Backend API (proxied by the frontend; exposed for direct use)
+- `3002` - WebSocket server (required by the frontend; must stay reachable)
+
+### Hardware acceleration, USB cameras, or Frigate network integration
+
+Add the optional overrides:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.advanced.yml up -d
+```
+
+See `docker-compose.advanced.yml` comments for device-path and network-name
+adjustments.
+
+## Versioning and releases
+
+- Releases are tagged on `main` with SemVer tags (`vX.Y.Z`) and a GitHub Release.
+- Official Docker images are published to GHCR on every release:
+  - `ghcr.io/ryang3d/timelapse-creator-backend`
+  - `ghcr.io/ryang3d/timelapse-creator-frontend`
+  - tagged with the version (`v1.0.0`) and `latest`
+- Check the running backend version:
+  ```bash
+  curl -s http://localhost:3001/health
+  ```
+- Upgrade: `docker compose pull && docker compose up -d`
+
+## Contributing
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, test
+commands, and contribution guidelines. Short version: `cd backend && npm test`
+must pass, and user-facing changes need `docker compose up -d --build`
+verification plus a README update.
 
 ## Usage
 
@@ -213,11 +241,10 @@ docker compose exec backend ffmpeg -rtsp_transport tcp -i "rtsp://your-url" -fra
 
 ### Cannot Access from Other Devices
 
-Update the frontend build args in `docker-compose.yml` with your server's IP address instead of `localhost`, then rebuild:
-```bash
-docker compose down
-docker compose up -d --build
-```
+The UI is served same-origin through nginx and the WebSocket defaults to port
+3002 on the same host, so no rebuild is needed for a different hostname.
+Rebuild is only required if you move the WebSocket port: set `REACT_APP_WS_URL`
+in a `.env` file and run `docker compose up -d --build frontend`.
 
 ### Out of Memory During Video Generation
 
@@ -253,7 +280,7 @@ docker compose up -d --build
 
 ## Architecture
 
-- **Frontend**: React + TailwindCSS + WebSocket client (port 3000)
+- **Frontend**: React + TailwindCSS + WebSocket client (port 3011)
 - **Backend**: Node.js + Express + FFmpeg + WebSocket server (ports 3001, 3002)
 - **Database**: SQLite database for session tracking and metadata
 - **Storage**: Docker volumes for snapshots, videos, and database
@@ -517,6 +544,7 @@ IMPORT_PARENT_PATH=/mnt/photo_import
 - `NVIDIA_VISIBLE_DEVICES` - Which NVIDIA GPUs to make visible (defaults to `all`)
 - `NVIDIA_DRIVER_CAPABILITIES` - GPU capabilities to enable (defaults to `compute,video,utility`)
 - `IMPORT_PARENT_PATH` - Base path for photo imports (defaults to `/mnt/photo_import`)
+- `VIDEO_UPLOAD_LIMIT_MB` - Maximum uploaded video size in MB (default 500)
 
 ## Roadmap
 
