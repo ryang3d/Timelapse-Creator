@@ -1,0 +1,24 @@
+name: Bug report
+description: Something not working as expected.
+title: ""
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Steps to reproduce, expected vs actual behavior.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `curl -s localhost:3001/health` or the image tag in use.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste the relevant `docker compose logs` output.
