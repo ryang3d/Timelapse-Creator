@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build output
+frontend/build/
+
+# Local env
+.env
+.env.local
+
+# Runtime data (bind-mounted under ./data by docker-compose.yml)
+data/
+backend/data/
+backend/snapshots/
+backend/videos/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-journal
+
+# Private compose overrides
+docker-compose.override.yml
+
+# Hermes
+.hermes/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+npm-debug.log*
