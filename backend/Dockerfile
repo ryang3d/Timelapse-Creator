@@ -11,11 +11,15 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
+# Version stamped into the image by the release workflow
+ARG APP_VERSION
+ENV APP_VERSION=${APP_VERSION}
+
 # Copy package files
 COPY package*.json ./
 
 # Install dependencies and rebuild native modules
-RUN npm install --production && \
+RUN npm ci --omit=dev && \
     npm rebuild better-sqlite3 sharp
 
 # Copy application files

@@ -3,15 +3,16 @@ FROM node:18-alpine as build
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
 COPY . .
 
-# Accept build arguments for React environment variables
-ARG REACT_APP_API_URL=http://localhost:3001
-ARG REACT_APP_WS_URL=ws://localhost:3002
+# Build arguments for React environment variables.
+# Both default to empty: the UI is served same-origin behind nginx,
+# which proxies /api, /snapshots, and /videos to the backend.
+ARG REACT_APP_API_URL=
+ARG REACT_APP_WS_URL=
 
-# Make them available to the build process
 ENV REACT_APP_API_URL=${REACT_APP_API_URL}
 ENV REACT_APP_WS_URL=${REACT_APP_WS_URL}
 
