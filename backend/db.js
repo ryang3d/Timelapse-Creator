@@ -3,8 +3,7 @@ const path = require('path');
 const fs = require('fs');
 
 class DatabaseManager {
-  constructor() {
-    const dbPath = path.join(__dirname, 'data', 'timelapse.db');
+  constructor(dbPath = path.join(__dirname, 'data', 'timelapse.db')) {
     
     // Ensure data directory exists
     const dataDir = path.dirname(dbPath);
@@ -44,7 +43,8 @@ class DatabaseManager {
           'video_file',     -- File-based video sources
           'upload',         -- Uploaded photos
           'import',         -- Imported photos
-          'mqtt'            -- MQTT-triggered capture (legacy)
+          'mqtt',           -- MQTT-triggered capture (legacy)
+          'frigate_scraper' -- Frigate historical scraper
         )),
         source_config TEXT, -- JSON string for source-specific settings
         rtsp_url TEXT,      -- Legacy field, kept for backward compatibility
@@ -55,7 +55,9 @@ class DatabaseManager {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         started_at DATETIME,
         completed_at DATETIME,
-        retention_days INTEGER DEFAULT 7
+        retention_days INTEGER DEFAULT 7,
+        progress_current INTEGER DEFAULT 0,
+        progress_total INTEGER DEFAULT 0
       )
     `);
 
@@ -107,17 +109,136 @@ class DatabaseManager {
     if (currentVersion < 1) {
       this.migrateToV1();
     }
-    
+
+    if (currentVersion < 2) {
+      this.migrateToV2();
+    }
+
+    if (currentVersion < 3) {
+      this.migrateToV3();
+    }
+
     // Update version
     this.db.prepare(`
-      INSERT OR REPLACE INTO settings (key, value) 
+      INSERT OR REPLACE INTO settings (key, value)
       VALUES ('db_version', ?)
-    `).run('1');
+    `).run('3');
   }
 
   migrateToV1() {
     // Initial migration - schema is already created
     console.log('Database migrated to version 1');
+  }
+
+  migrateToV2() {
+    // Add frigate_scraper to the sessions source_type CHECK constraint.
+    // SQLite cannot ALTER a CHECK constraint, so rebuild the table.
+    console.log('Running migration to add frigate_scraper support...');
+
+    try {
+      const tableInfo = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'").get();
+
+      if (tableInfo && tableInfo.sql && tableInfo.sql.includes('frigate_scraper')) {
+        console.log('frigate_scraper already exists in CHECK constraint, skipping migration');
+        return;
+      }
+
+      this.db.exec('BEGIN TRANSACTION');
+
+      this.db.exec(`
+        CREATE TABLE sessions_new (
+          id TEXT PRIMARY KEY,
+          source_type TEXT NOT NULL DEFAULT 'rtsp' CHECK (source_type IN (
+            'rtsp',
+            'usb_camera',
+            'capture_card',
+            'http_stream',
+            'rtmp_stream',
+            'screen_capture',
+            'video_file',
+            'upload',
+            'import',
+            'mqtt',
+            'frigate_scraper'
+          )),
+          source_config TEXT,
+          rtsp_url TEXT,
+          interval_seconds INTEGER NOT NULL,
+          duration_seconds INTEGER,
+          use_timer BOOLEAN DEFAULT 0,
+          active BOOLEAN DEFAULT 1,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          started_at DATETIME,
+          completed_at DATETIME,
+          retention_days INTEGER DEFAULT 7
+        )
+      `);
+
+      this.db.exec(`
+        INSERT INTO sessions_new (id, source_type, source_config, rtsp_url, interval_seconds,
+                                  duration_seconds, use_timer, active, created_at, started_at,
+                                  completed_at, retention_days)
+        SELECT id, source_type, source_config, rtsp_url, interval_seconds,
+               duration_seconds, use_timer, active, created_at, started_at,
+               completed_at, retention_days
+        FROM sessions
+      `);
+
+      this.db.exec('DROP TABLE sessions');
+      this.db.exec('ALTER TABLE sessions_new RENAME TO sessions');
+
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_snapshots_session_id ON snapshots(session_id);
+        CREATE INDEX IF NOT EXISTS idx_snapshots_captured_at ON snapshots(captured_at);
+        CREATE INDEX IF NOT EXISTS idx_videos_session_id ON videos(session_id);
+        CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(active);
+        CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at);
+      `);
+
+      this.db.exec('COMMIT');
+
+      console.log('Database migrated to version 2 (added frigate_scraper support)');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      console.error('Migration to version 2 failed:', error.message);
+      throw error;
+    }
+  }
+
+  migrateToV3() {
+    // Add progress tracking columns used by the Frigate scraper.
+    console.log('Running migration to add progress tracking columns...');
+
+    try {
+      const tableInfo = this.db.prepare('PRAGMA table_info(sessions)').all();
+      const hasProgressCurrent = tableInfo.some((col) => col.name === 'progress_current');
+      const hasProgressTotal = tableInfo.some((col) => col.name === 'progress_total');
+
+      if (hasProgressCurrent && hasProgressTotal) {
+        console.log('Progress columns already exist, skipping migration');
+        return;
+      }
+
+      this.db.exec('BEGIN TRANSACTION');
+
+      if (!hasProgressCurrent) {
+        this.db.exec('ALTER TABLE sessions ADD COLUMN progress_current INTEGER DEFAULT 0');
+        console.log('Added progress_current column');
+      }
+
+      if (!hasProgressTotal) {
+        this.db.exec('ALTER TABLE sessions ADD COLUMN progress_total INTEGER DEFAULT 0');
+        console.log('Added progress_total column');
+      }
+
+      this.db.exec('COMMIT');
+
+      console.log('Database migrated to version 3 (added progress tracking columns)');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      console.error('Migration to version 3 failed:', error.message);
+      throw error;
+    }
   }
 
   // Session management

@@ -14,6 +14,9 @@ const http = require('http');
 const https = require('https');
 const DatabaseManager = require('./db');
 const { fetchFrigateCameras } = require('./frigate');
+const ScraperService = require('./scraperService');
+const VideoService = require('./videoService');
+const { spawn } = require('child_process');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -26,6 +29,8 @@ app.use(cors());
 app.use(express.json());
 app.use('/snapshots', express.static('snapshots'));
 app.use('/videos', express.static('videos'));
+// The scraper status API returns /output/<id>.mp4 URLs; alias to the same dir.
+app.use('/output', express.static('videos'));
 
 const snapshotsDir = path.join(__dirname, 'snapshots');
 const videosDir = path.join(__dirname, 'videos');
@@ -34,6 +39,7 @@ if (!fs.existsSync(videosDir)) fs.mkdirSync(videosDir, { recursive: true });
 
 // Initialize database
 const db = new DatabaseManager();
+const videoService = new VideoService();
 
 // Keep track of active capture processes
 const activeCaptures = new Map();
@@ -529,6 +535,22 @@ const wss = new WebSocket.Server({ port: WS_PORT });
 wss.on('connection', (ws) => {
   console.log('WebSocket client connected');
   ws.on('close', () => console.log('WebSocket client disconnected'));
+
+  ws.on('message', (data) => {
+    try {
+      const message = JSON.parse(data.toString());
+      console.log('[Server] Received WebSocket message:', message.type);
+
+      // Legacy path: scraper clients that cannot call the video generator
+      // directly signal completion over the socket instead.
+      if (message.type === 'scrape_complete') {
+        console.log('[Server] Received completion signal for session:', message.sessionId);
+        generateVideoForSession(message.sessionId);
+      }
+    } catch (error) {
+      console.error('[Server] Error parsing WebSocket message:', error);
+    }
+  });
 });
 
 function broadcast(data) {
@@ -538,6 +560,104 @@ function broadcast(data) {
     }
   });
 }
+
+// Auto-render a timelapse for a scraper session once its scrape completes.
+// Uses the same concat filelist + codec tiering as /api/generate-timelapse,
+// with an automatic software fallback for hardware (VAAPI) failures.
+function generateVideoForSession(sessionId) {
+  console.log('[Server] Starting automatic video generation for session:', sessionId);
+
+  const session = db.getSession(sessionId);
+  if (!session) {
+    console.error('[Server] Session not found:', sessionId);
+    return;
+  }
+
+  if (session.source_type !== 'frigate_scraper') {
+    console.log('[Server] Not a scraper session, skipping auto-generation');
+    return;
+  }
+
+  const snapshots = db.getSnapshots(sessionId);
+  if (snapshots.length < 2) {
+    console.error('[Server] Insufficient snapshots for video generation');
+    return;
+  }
+
+  const sessionDir = path.join(snapshotsDir, sessionId);
+  const outputFile = path.join(videosDir, `${sessionId}.mp4`);
+  const fileListPath = path.join(sessionDir, `filelist-autogen-${Date.now()}.txt`);
+  const fileList = snapshots
+    .map(s => `file '${path.join(__dirname, s.file_path.replace(/^\//, ''))}'`)
+    .join('\n');
+  fs.writeFileSync(fileListPath, fileList);
+
+  const codec = videoService.getBestCodec();
+  const ffmpegPath = '/usr/bin/ffmpeg';
+  const inputOptions = [
+    ...codec.inputOptions,
+    '-f', 'concat', '-safe', '0',
+    '-r', '30'
+  ];
+
+  const finish = () => {
+    try {
+      const stats = fs.statSync(outputFile);
+      db.addVideo(sessionId, `/videos/${sessionId}.mp4`, 30, 'mp4', { file_size: stats.size });
+    } catch (error) {
+      console.error('Error saving video to database:', error);
+    }
+    db.updateSession(sessionId, {
+      active: 0,
+      completed_at: new Date().toISOString()
+    });
+    if (fs.existsSync(fileListPath)) fs.unlinkSync(fileListPath);
+    if (fs.existsSync(sessionDir)) {
+      console.log(`Cleaning up snapshots folder for scraper session ${sessionId}`);
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+    broadcast({
+      type: 'timelapse-ready',
+      sessionId,
+      videoUrl: `/videos/${sessionId}.mp4`,
+      format: 'mp4',
+      videoId: `${sessionId}.mp4`
+    });
+  };
+
+  const run = (outputOptions, isFallback) => {
+    const args = [...inputOptions, '-i', fileListPath, ...outputOptions, '-y', outputFile];
+    const proc = spawn(ffmpegPath, args);
+    const tag = isFallback ? 'FALLBACK ' : '';
+    proc.stdout.on('data', (d) => console.log(`[AutoRender ${tag}STDOUT] ${d.toString().trim()}`));
+    proc.stderr.on('data', (d) => console.log(`[AutoRender ${tag}STDERR] ${d.toString().trim()}`));
+    proc.on('error', (err) => console.error('[AutoRender] spawn error:', err));
+    proc.on('close', (code) => {
+      if (code === 0) {
+        finish();
+        return;
+      }
+      if (!isFallback) {
+        console.error(`[AutoRender] hardware render failed (code ${code}); retrying with software encoder`);
+        run(['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'fast', '-b:v', '5M'], true);
+        return;
+      }
+      console.error(`[AutoRender] fallback render also failed (code ${code})`);
+      if (fs.existsSync(fileListPath)) fs.unlinkSync(fileListPath);
+      broadcast({
+        type: 'render-failed',
+        sessionId,
+        message: 'Video rendering failed after hardware and software attempts'
+      });
+    });
+  };
+
+  run(codec.outputOptions.slice(), false);
+}
+
+// Initialize the scraper service (after db, broadcast, and
+// generateVideoForSession are defined).
+const scraperService = new ScraperService(db, snapshotsDir, broadcast, generateVideoForSession);
 
 app.post('/api/test-connection', async (req, res) => {
   const { url } = req.body;
@@ -807,6 +927,155 @@ app.get('/api/session/:sessionId', (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Frigate Historical Scraper endpoints
+// ---------------------------------------------------------------------------
+
+app.post('/api/scraper/start', async (req, res) => {
+  try {
+    const {
+      camera,
+      startIso,
+      endIso,
+      intervalSeconds,
+      frigateApiUrl,
+      timezone = 'America/Los_Angeles'
+    } = req.body;
+
+    if (!camera || !startIso || !endIso || !intervalSeconds) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: camera, startIso, endIso, intervalSeconds'
+      });
+    }
+
+    const sessionId = uuidv4();
+    const sessionDir = path.join(snapshotsDir, sessionId);
+    fs.mkdirSync(sessionDir, { recursive: true });
+
+    // NOTE: source_config is passed as an OBJECT; db.createSession JSON.stringify's it.
+    const sessionData = {
+      id: sessionId,
+      source_type: 'frigate_scraper',
+      source_config: {
+        camera,
+        startIso,
+        endIso,
+        intervalSeconds: parseInt(intervalSeconds),
+        frigateApiUrl: frigateApiUrl || null,
+        timezone
+      },
+      rtsp_url: null,
+      interval_seconds: parseInt(intervalSeconds),
+      duration_seconds: null,
+      use_timer: false
+    };
+
+    db.createSession(sessionData);
+
+    scraperService.runScrape({
+      sessionId,
+      camera,
+      startIso,
+      endIso,
+      intervalSeconds: parseInt(intervalSeconds),
+      frigateApiUrl,
+      timezone
+    }).catch((error) => {
+      console.error(`Scrape failed for session ${sessionId}:`, error);
+      broadcast({
+        type: 'scrape_error',
+        sessionId,
+        error: error.message
+      });
+    });
+
+    res.json({
+      success: true,
+      sessionId,
+      message: 'Historical scrape started'
+    });
+  } catch (error) {
+    console.error('Error starting scraper:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to start scraper: ' + error.message
+    });
+  }
+});
+
+app.post('/api/scraper/stop', (req, res) => {
+  try {
+    const { sessionId } = req.body;
+
+    if (!sessionId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Session ID is required'
+      });
+    }
+
+    const stopped = scraperService.stopScrape(sessionId);
+
+    if (stopped) {
+      res.json({ success: true, message: 'Scrape stopped successfully' });
+    } else {
+      res.status(404).json({ success: false, message: 'Active scrape not found for this session' });
+    }
+  } catch (error) {
+    console.error('Error stopping scraper:', error);
+    res.status(500).json({ success: false, message: 'Failed to stop scraper: ' + error.message });
+  }
+});
+
+app.get('/api/scraper/status/:sessionId', (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const status = scraperService.getScrapeStatus(sessionId);
+
+    if (status) {
+      res.json({ success: true, status });
+    } else {
+      res.status(404).json({ success: false, message: 'No active scrape found for this session' });
+    }
+  } catch (error) {
+    console.error('Error getting scraper status:', error);
+    res.status(500).json({ success: false, message: 'Failed to get scraper status: ' + error.message });
+  }
+});
+
+app.get('/api/scraper/cameras', async (req, res) => {
+  try {
+    // Empty/missing frigateApiUrl falls back to the server's FRIGATE_API_URL env.
+    const frigateApiUrl = req.query.frigateApiUrl || FRIGATE_API_URL;
+
+    const cameras = await scraperService.getFrigateCameras(frigateApiUrl);
+    res.json({ success: true, cameras });
+  } catch (error) {
+    console.error('Error fetching Frigate cameras:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch cameras: ' + error.message });
+  }
+});
+
+app.post('/api/scraper/preview', (req, res) => {
+  try {
+    const { startIso, endIso, intervalSeconds } = req.body;
+
+    if (!startIso || !endIso || !intervalSeconds) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: startIso, endIso, intervalSeconds'
+      });
+    }
+
+    const preview = scraperService.calculatePreview(startIso, endIso, parseInt(intervalSeconds));
+    res.json({ success: true, preview });
+  } catch (error) {
+    console.error('Error calculating preview:', error);
+    res.status(500).json({ success: false, message: 'Failed to calculate preview: ' + error.message });
+  }
+});
+
 app.post('/api/generate-timelapse', (req, res) => {
   const { 
     sessionId, 
@@ -836,10 +1105,12 @@ app.post('/api/generate-timelapse', (req, res) => {
   }
 
   const extension = format === 'gif' ? 'gif' : 'mp4';
-  // Generate unique filename to support multiple timelapses per session
   const timestamp = Date.now();
   const uniqueId = uuidv4().substring(0, 8);
-  const filename = `timelapse-${sessionId}-${timestamp}-${uniqueId}.${extension}`;
+  // Scraper sessions render into a stable filename (one video per session);
+  // all other sources keep unique names so multiple timelapses can coexist.
+  const isScraper = session.source_type === 'frigate_scraper';
+  const filename = isScraper ? `${sessionId}.${extension}` : `timelapse-${sessionId}-${timestamp}-${uniqueId}.${extension}`;
   const outputFile = path.join(videosDir, filename);
   const sessionDir = path.join(snapshotsDir, sessionId);
   const fileListPath = path.join(sessionDir, `filelist-${timestamp}.txt`);
@@ -865,9 +1136,20 @@ app.post('/api/generate-timelapse', (req, res) => {
     }
   }
 
+  // Scraper sessions use codec tiering (VAAPI or software) with the concat
+  // filelist; every other source keeps the existing CUDA/NVENC pipeline.
+  let codec;
+  if (isScraper) {
+    codec = videoService.getBestCodec();
+  }
+
+  const inputOptions = isScraper
+    ? [...codec.inputOptions, '-f concat', '-safe', '0', '-r', fps.toString()]
+    : ['-hwaccel cuda', '-f concat', '-safe', '0', '-r', fps.toString()];
+
   const command = ffmpeg()
     .input(fileListPath)
-    .inputOptions(['-hwaccel cuda', '-f concat', '-safe 0', '-r', fps.toString()]);
+    .inputOptions(inputOptions);
 
   if (format === 'gif') {
     // Build GIF filter chain
@@ -890,7 +1172,7 @@ app.post('/api/generate-timelapse', (req, res) => {
       // First pass: generate palette
       const paletteCommand = ffmpeg()
         .input(fileListPath)
-        .inputOptions(['-hwaccel cuda', '-f concat', '-safe 0', '-r', fps.toString()])
+        .inputOptions(inputOptions)
         .outputOptions([
           '-vf', `${filterString ? filterString + ',' : ''}palettegen=max_colors=${gifColors}`,
           '-y'
@@ -902,7 +1184,7 @@ app.post('/api/generate-timelapse', (req, res) => {
         // Create new command for second pass with both inputs
         const finalCommand = ffmpeg()
           .input(fileListPath)
-          .inputOptions(['-hwaccel cuda', '-f concat', '-safe 0', '-r', fps.toString()])
+          .inputOptions(inputOptions)
           .input(paletteFile);
         
         // Build complex filter: apply scaling/fps to video, then apply palette
@@ -926,9 +1208,9 @@ app.post('/api/generate-timelapse', (req, res) => {
             // Cleanup
             if (fs.existsSync(fileListPath)) fs.unlinkSync(fileListPath);
             if (fs.existsSync(paletteFile)) fs.unlinkSync(paletteFile);
-            
+
             const videoUrl = `/videos/${filename}`;
-            
+
             // Save video to database
             try {
               const stats = fs.statSync(outputFile);
@@ -938,7 +1220,14 @@ app.post('/api/generate-timelapse', (req, res) => {
             } catch (error) {
               console.error('Error saving video to database:', error);
             }
-            
+
+            db.updateSession(sessionId, { active: 0, completed_at: new Date().toISOString() });
+
+            if (isScraper && fs.existsSync(sessionDir)) {
+              console.log(`Cleaning up snapshots folder for scraper session ${sessionId}`);
+              fs.rmSync(sessionDir, { recursive: true, force: true });
+            }
+
             broadcast({
               type: 'timelapse-ready',
               sessionId: sessionId,
@@ -973,18 +1262,26 @@ app.post('/api/generate-timelapse', (req, res) => {
     }
   } else {
     // MP4 output options
-    const mp4OutputOptions = [
-      '-c:v', 'h264_nvenc',
-      '-pix_fmt', 'yuv420p',
-      '-preset', 'fast',
-      '-cq', '23'
-    ];
-    
-    // Add scale filter if specified
-    if (scaleFilter) {
-      mp4OutputOptions.push('-vf', scaleFilter);
+    let mp4OutputOptions;
+    if (isScraper) {
+      // Codec tiering (VAAPI or software). The VAAPI path already carries its
+      // -vf hwupload chain, so no scale filter is added for the hardware path.
+      mp4OutputOptions = codec.outputOptions.slice();
+      if (scaleFilter && codec.type !== 'hardware') {
+        mp4OutputOptions.push('-vf', scaleFilter);
+      }
+    } else {
+      mp4OutputOptions = [
+        '-c:v', 'h264_nvenc',
+        '-pix_fmt', 'yuv420p',
+        '-preset', 'fast',
+        '-cq', '23'
+      ];
+      if (scaleFilter) {
+        mp4OutputOptions.push('-vf', scaleFilter);
+      }
     }
-    
+
     command.outputOptions(mp4OutputOptions);
   }
 
@@ -1006,6 +1303,15 @@ app.post('/api/generate-timelapse', (req, res) => {
           console.error('Error saving video to database:', error);
         }
 
+        // Mark session completed (also covers scraper sessions rendered
+        // manually through this endpoint).
+        db.updateSession(sessionId, { active: 0, completed_at: new Date().toISOString() });
+
+        if (isScraper && fs.existsSync(sessionDir)) {
+          console.log(`Cleaning up snapshots folder for scraper session ${sessionId}`);
+          fs.rmSync(sessionDir, { recursive: true, force: true });
+        }
+
         broadcast({
           type: 'timelapse-ready',
           sessionId: sessionId,
@@ -1022,7 +1328,88 @@ app.post('/api/generate-timelapse', (req, res) => {
       })
       .run();
   } else if (format === 'mp4') {
-    // MP4 encoding
+    // MP4 encoding. Scraper sessions on a hardware codec use a direct spawn
+    // with an automatic software fallback (VAAPI can fail late, after the
+    // driver starts uploading frames); everything else keeps fluent-ffmpeg.
+    if (isScraper && codec.type === 'hardware') {
+      const args = [
+        ...codec.inputOptions,
+        '-f', 'concat', '-safe', '0',
+        '-r', fps.toString(),
+        '-i', fileListPath,
+        ...codec.outputOptions,
+        '-y', outputFile
+      ];
+      const runMp4WithFallback = (proc, isFallback) => {
+        const tag = isFallback ? 'FALLBACK ' : '';
+        proc.stdout.on('data', (d) => console.log(`[FFmpeg ${tag}STDOUT] ${d.toString().trim()}`));
+        proc.stderr.on('data', (d) => console.log(`[FFmpeg ${tag}STDERR] ${d.toString().trim()}`));
+        proc.on('error', (err) => {
+          console.error('FFmpeg spawn error:', err);
+          res.status(500).json({ success: false, message: `FFmpeg failed to start: ${err.message}` });
+        });
+        proc.on('close', (code) => {
+          console.log(`FFmpeg ${isFallback ? 'fallback ' : ''}exited with code ${code}`);
+          if (code === 0) {
+            if (fs.existsSync(fileListPath)) fs.unlinkSync(fileListPath);
+            const videoUrl = `/videos/${filename}`;
+            try {
+              const stats = fs.statSync(outputFile);
+              db.addVideo(sessionId, videoUrl, parseInt(fps), format, {
+                file_size: stats.size
+              });
+            } catch (error) {
+              console.error('Error saving video to database:', error);
+            }
+            db.updateSession(sessionId, { active: 0, completed_at: new Date().toISOString() });
+            if (fs.existsSync(sessionDir)) {
+              console.log(`Cleaning up snapshots folder for scraper session ${sessionId}`);
+              fs.rmSync(sessionDir, { recursive: true, force: true });
+            }
+            broadcast({
+              type: 'timelapse-ready',
+              sessionId: sessionId,
+              videoUrl: videoUrl,
+              format: format,
+              videoId: filename
+            });
+            res.json({ success: true, videoUrl: videoUrl, format: format, filename: filename });
+            return;
+          }
+          if (!isFallback) {
+            console.error('Render failed, retrying with software encoder...');
+            const softwareArgs = [
+              '-f', 'concat', '-safe', '0',
+              '-r', fps.toString(),
+              '-i', fileListPath,
+              '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'fast', '-b:v', '5M',
+              '-y', outputFile
+            ];
+            runMp4WithFallback(spawn('/usr/bin/ffmpeg', softwareArgs), true);
+            return;
+          }
+          if (fs.existsSync(fileListPath)) fs.unlinkSync(fileListPath);
+          broadcast({
+            type: 'render-failed',
+            sessionId,
+            message: 'Video rendering failed after hardware and software attempts'
+          });
+          res.status(500).json({ success: false, message: `Video encoding failed with code ${code}` });
+        });
+      };
+      try {
+        const ffmpegProcess = spawn('/usr/bin/ffmpeg', args);
+        if (!ffmpegProcess || !ffmpegProcess.pid) {
+          throw new Error('Process not spawned');
+        }
+        runMp4WithFallback(ffmpegProcess, false);
+      } catch (err) {
+        console.error('Synchronous error during FFmpeg spawn:', err);
+        res.status(500).json({ success: false, message: `Synchronous error during FFmpeg spawn: ${err.message}` });
+      }
+      return;
+    }
+
     command
       .output(outputFile)
       .on('end', () => {
@@ -1037,6 +1424,15 @@ app.post('/api/generate-timelapse', (req, res) => {
           });
         } catch (error) {
           console.error('Error saving video to database:', error);
+        }
+
+        // Mark session completed (also covers scraper sessions rendered
+        // manually through this endpoint).
+        db.updateSession(sessionId, { active: 0, completed_at: new Date().toISOString() });
+
+        if (isScraper && fs.existsSync(sessionDir)) {
+          console.log(`Cleaning up snapshots folder for scraper session ${sessionId}`);
+          fs.rmSync(sessionDir, { recursive: true, force: true });
         }
 
         broadcast({
