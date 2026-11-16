@@ -29,7 +29,7 @@ app.use(cors());
 app.use(express.json());
 app.use('/snapshots', express.static('snapshots'));
 app.use('/videos', express.static('videos'));
-// The scraper status API returns /output/<id>.mp4 URLs; alias to the same dir.
+// Legacy alias: earlier scraper status responses pointed at /output/<id>.mp4.
 app.use('/output', express.static('videos'));
 
 const snapshotsDir = path.join(__dirname, 'snapshots');

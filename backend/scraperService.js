@@ -379,7 +379,7 @@ class ScraperService {
         progress_current: session?.progress_current || scrapeState.completedFrames,
         progress_total: session?.progress_total || scrapeState.totalFrames,
         elapsedMs: scrapeState.completedAt - scrapeState.startTime,
-        videoUrl: scrapeState.completed ? `/output/${sessionId}.mp4` : null
+        videoUrl: scrapeState.completed ? `/videos/${sessionId}.mp4` : null
       };
     }
 
