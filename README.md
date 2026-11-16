@@ -18,6 +18,7 @@ Transform camera streams, uploaded photos, and MQTT-triggered captures into time
 - **Photo Upload** - Drag-and-drop interface for uploading image collections
 - **Video Upload** - Upload a video file (MP4, WebM, MOV, AVI, MKV) to produce a short timelapse
 - **Network Import** - Import photos from network paths and shared folders
+- **Frigate Historical Scraper** - Build timelapses from Frigate NVR recordings at precise intervals
 - **MQTT Triggers** - Capture photos from any source based on MQTT message transitions (1→0)
 
 ### 🎛️ **Advanced Management**
@@ -69,7 +70,7 @@ Transform camera streams, uploaded photos, and MQTT-triggered captures into time
 
 - `3011` - Frontend web interface (nginx; also proxies /api, /snapshots, /videos)
 - `3001` - Backend API (proxied by the frontend; exposed for direct use)
-- `3002` - WebSocket server (required by the frontend; must stay reachable)
+- `3002` - Backend WebSocket server (optional direct access; the UI connects same-origin at `/ws`)
 
 ### Hardware acceleration, USB cameras, or Frigate network integration
 
@@ -142,6 +143,21 @@ The application provides multiple ways to create timelapses:
    - Example: `/path/to/photos` or `\\server\share\photos`
 3. **Click "Import Photos"** to copy and process images
 4. **Generate timelapse** from imported photos
+
+### 🗄️ **Frigate Historical Scraper**
+Create timelapses from your Frigate NVR's historical recordings at precise intervals, perfect for compressing long time periods into short videos.
+
+1. **Switch to the "Frigate Scraper" tab** in the source dropdown
+2. **Frigate API URL** - optional; leave empty to use the server's `FRIGATE_API_URL` environment variable (the internal `http://frigate:5000` needs no token; the public port 8971 needs `FRIGATE_API_TOKEN`)
+3. **Click "Load Cameras"** to fetch available cameras
+4. **Select a camera**, then set start/end date-time, interval (seconds), and timezone
+5. **Click "Calculate Preview"** to see the expected frame count and video duration
+6. **Click "Start Scraping"** - progress is shown in real time; stop any time with "Stop Scraping"
+7. When the scrape completes, the timelapse video renders automatically and a "Video Ready" player appears in the tab (also available in the Sessions list)
+
+Notes:
+- Scraper renders use Intel VAAPI hardware encoding when the backend container has `/dev/dri/renderD128` available (add `devices: - /dev/dri` to the backend service to share the GPU), otherwise software `libx264`; hardware failures automatically retry with software.
+- Requires Frigate's recordings to be enabled for the chosen camera.
 
 ### 📡 **MQTT Trigger**
 1. **Switch to "MQTT Trigger" tab**
@@ -234,17 +250,14 @@ docker compose exec backend ffmpeg -rtsp_transport tcp -i "rtsp://your-url" -fra
 
 ### WebSocket Connection Issues
 
-- Check if port 3002 is accessible
+- Check that `/ws` connects on the UI port (browser DevTools -> Network -> WS tab); it proxies to backend port 3002
 - Verify firewall settings
 - Ensure backend container is running: `docker compose ps`
 - Check browser console for errors
 
 ### Cannot Access from Other Devices
 
-The UI is served same-origin through nginx and the WebSocket defaults to port
-3002 on the same host, so no rebuild is needed for a different hostname.
-Rebuild is only required if you move the WebSocket port: set `REACT_APP_WS_URL`
-in a `.env` file and run `docker compose up -d --build frontend`.
+The UI is served same-origin through nginx; `/api` and `/ws` are proxied to the backend, so no rebuild is needed for a different hostname. A rebuild is only required if you override `REACT_APP_API_URL` / `REACT_APP_WS_URL` to point somewhere other than same-origin.
 
 ### Out of Memory During Video Generation
 
@@ -559,6 +572,7 @@ IMPORT_PARENT_PATH=/mnt/photo_import
 - [x] **Universal Video Input** - USB cameras, capture cards, HTTP/RTMP streams, screen capture
 - [x] **Multi-Source MQTT** - MQTT triggers work with all video source types
 - [x] **Multiple Output Formats** - MP4 and GIF support for maximum compatibility
+- [x] **Frigate Historical Scraper** - Timezone-aware historical frame fetching from Frigate NVR
 
 ### 🚀 **Future Enhancements**
 - [ ] **Additional Video Formats** - WebM, AVI support
@@ -585,6 +599,7 @@ This project relies on the following open source software:
 - [UUID](https://github.com/uuidjs/uuid) - MIT License
 - [WS](https://github.com/websockets/ws) - MIT License
 - [CORS](https://github.com/expressjs/cors) - MIT License
+- [Luxon](https://moment.github.io/luxon/) - MIT License
 
 ### Frontend
 - [React](https://reactjs.org/) - MIT License

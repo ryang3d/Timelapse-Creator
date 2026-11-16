@@ -1,8 +1,14 @@
 FROM node:18-slim
 
-# Install FFmpeg and required dependencies
+# Intel iHD VAAPI driver for scraper hardware encoding (N100/iHD/ADL GPUs).
+ENV LIBVA_DRIVER_NAME=iHD
+
+# Install FFmpeg, VAAPI drivers, and required dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
+    intel-media-va-driver \
+    libmfx1 \
+    va-driver-all \
     python3 \
     make \
     g++ \
