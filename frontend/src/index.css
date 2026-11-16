@@ -16,6 +16,12 @@
     -moz-osx-font-smoothing: grayscale;
     @apply bg-slate-900 text-slate-100;
   }
+
+  /* Ensure dropdown options have black text for visibility */
+  option {
+    background-color: white;
+    color: black;
+  }
 }
 
 @layer components {

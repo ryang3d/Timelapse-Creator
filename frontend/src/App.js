@@ -3,7 +3,7 @@ import { Play, Square, Download, Settings, CheckCircle, XCircle, Upload, FolderO
 import { v4 as uuidv4 } from 'uuid';
 
 const API_URL = process.env.REACT_APP_API_URL || '';
-const WS_URL = process.env.REACT_APP_WS_URL || (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.hostname + ':3002';
+const WS_URL = process.env.REACT_APP_WS_URL || '/ws'; // same-origin; frontend nginx proxies /ws to the backend WS port
 
 // Parse a fetch response as JSON, with a descriptive error when the body is
 // not JSON (e.g. an nginx 413/502 HTML error page), instead of the cryptic
@@ -112,6 +112,22 @@ function App() {
   const [mqttFrigateExpanded, setMqttFrigateExpanded] = useState(false);
   const [selectedMqttFrigateCamera, setSelectedMqttFrigateCamera] = useState('');
 
+  // Frigate Scraper states
+  const [scraperApiUrl, setScraperApiUrl] = useState('');
+  const [scraperCameras, setScraperCameras] = useState([]);
+  const [loadingScraperCameras, setLoadingScraperCameras] = useState(false);
+  const [selectedScraperCamera, setSelectedScraperCamera] = useState('');
+  const [scraperStartIso, setScraperStartIso] = useState('');
+  const [scraperEndIso, setScraperEndIso] = useState('');
+  const [scraperInterval, setScraperInterval] = useState(30);
+  const [scraperTimezone, setScraperTimezone] = useState('America/Los_Angeles');
+  const [scraperPreview, setScraperPreview] = useState(null);
+  const [scraperLoading, setScraperLoading] = useState(false);
+  const [scraperSessionId, setScraperSessionId] = useState(null);
+  const [scraperStatus, setScraperStatus] = useState(null);
+  const [scraperVideoUrl, setScraperVideoUrl] = useState(null);
+  const [scraperCompleted, setScraperCompleted] = useState(false);
+
   // MQTT source selection
   const [mqttHttpUrl, setMqttHttpUrl] = useState('');
   const [mqttRtmpUrl, setMqttRtmpUrl] = useState('');
@@ -165,6 +181,15 @@ function App() {
           // Reload videos for this session if we're viewing it in sessions management
           if (expandedSessionId === data.sessionId) {
             loadSessionVideos(data.sessionId);
+          }
+          break;
+        case 'render-failed':
+          if (data.sessionId === sessionId || data.sessionId === scraperSessionId) {
+            alert(`Render failed: ${data.message}`);
+            setScraperStatus(null);
+            setScraperLoading(false);
+            setScraperCompleted(false);
+            setScraperVideoUrl(null);
           }
           break;
         case 'error':
@@ -883,6 +908,173 @@ function App() {
     }
   };
 
+  // Frigate Scraper functions
+  const loadScraperCameras = async () => {
+    setLoadingScraperCameras(true);
+    try {
+      // Empty URL falls back to the server's FRIGATE_API_URL on the backend.
+      const params = scraperApiUrl ? `?frigateApiUrl=${encodeURIComponent(scraperApiUrl)}` : '';
+      const response = await fetch(`${API_URL}/api/scraper/cameras${params}`);
+      const data = await parseApiResponse(response);
+
+      if (data.success) {
+        setScraperCameras(data.cameras);
+      } else {
+        setScraperCameras([]);
+        alert('Failed to load cameras: ' + data.message);
+      }
+    } catch (error) {
+      setScraperCameras([]);
+      alert('Error loading cameras: ' + error.message);
+    } finally {
+      setLoadingScraperCameras(false);
+    }
+  };
+
+  const calculateScraperPreview = async () => {
+    if (!scraperStartIso || !scraperEndIso || !scraperInterval) {
+      setScraperPreview(null);
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_URL}/api/scraper/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          startIso: scraperStartIso,
+          endIso: scraperEndIso,
+          intervalSeconds: scraperInterval
+        })
+      });
+
+      const data = await parseApiResponse(response);
+      if (data.success) {
+        setScraperPreview(data.preview);
+      } else {
+        setScraperPreview(null);
+        alert('Failed to calculate preview: ' + data.message);
+      }
+    } catch (error) {
+      setScraperPreview(null);
+      alert('Error calculating preview: ' + error.message);
+    }
+  };
+
+  const startScraper = async () => {
+    if (!selectedScraperCamera || !scraperStartIso || !scraperEndIso || !scraperInterval) {
+      alert('Please fill in all required fields');
+      return;
+    }
+
+    // Reset state for a new scrape (complete state wipe)
+    setScraperSessionId(null);
+    setScraperCompleted(false);
+    setScraperVideoUrl(null);
+    setScraperStatus(null);
+
+    setScraperLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/api/scraper/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          camera: selectedScraperCamera,
+          startIso: scraperStartIso,
+          endIso: scraperEndIso,
+          intervalSeconds: scraperInterval,
+          frigateApiUrl: scraperApiUrl,
+          timezone: scraperTimezone
+        })
+      });
+
+      const data = await parseApiResponse(response);
+      if (data.success) {
+        setScraperSessionId(data.sessionId);
+        alert('Scraping started successfully');
+
+        // Start polling for status
+        const pollStatus = setInterval(async () => {
+          try {
+            const statusResponse = await fetch(`${API_URL}/api/scraper/status/${data.sessionId}`);
+
+            // Handle 404 - job completed and moved out of the active map
+            if (statusResponse.status === 404) {
+              console.log('Scraper job completed (404 - no longer active)');
+              setScraperStatus({ active: false, completed: true, completedFrames: scraperStatus?.completedFrames || 0 });
+              setScraperCompleted(true);
+              setScraperVideoUrl(`${API_URL}/videos/${data.sessionId}.mp4`);
+              clearInterval(pollStatus);
+              return;
+            }
+
+            const statusData = await statusResponse.json();
+
+            if (statusData.success) {
+              setScraperStatus(statusData.status);
+
+              // Stop polling if job is completed or no longer active
+              if (statusData.status.completed || !statusData.status.active) {
+                console.log('Scraper job completed');
+                setScraperCompleted(true);
+                setScraperVideoUrl(statusData.status.videoUrl || `${API_URL}/videos/${data.sessionId}.mp4`);
+                clearInterval(pollStatus);
+              }
+            } else {
+              setScraperStatus(null);
+              setScraperCompleted(true);
+              setScraperVideoUrl(`${API_URL}/videos/${data.sessionId}.mp4`);
+              clearInterval(pollStatus);
+            }
+          } catch (error) {
+            console.error('Error polling scraper status:', error);
+            setScraperStatus(null);
+            setScraperLoading(false);
+            clearInterval(pollStatus);
+          }
+        }, 2000);
+      } else {
+        alert('Failed to start scraper: ' + data.message);
+      }
+    } catch (error) {
+      alert('Error starting scraper: ' + error.message);
+    } finally {
+      setScraperLoading(false);
+    }
+  };
+
+  const stopScraper = async () => {
+    if (!scraperSessionId) return;
+
+    try {
+      const response = await fetch(`${API_URL}/api/scraper/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: scraperSessionId })
+      });
+
+      const data = await parseApiResponse(response);
+      if (data.success) {
+        setScraperSessionId(null);
+        setScraperStatus(null);
+        setScraperCompleted(false);
+        setScraperVideoUrl(null);
+        alert('Scraping stopped successfully');
+      } else {
+        alert('Failed to stop scraper: ' + data.message);
+      }
+    } catch (error) {
+      alert('Error stopping scraper: ' + error.message);
+    }
+  };
+
+  const clearScraperSession = () => {
+    setScraperSessionId(null);
+    setScraperStatus(null);
+    setScraperCompleted(false);
+    setScraperVideoUrl(null);
+  };
+
   // Load sessions and stats when sessions tab is selected
   useEffect(() => {
     if (showSessions) {
@@ -1066,6 +1258,7 @@ function App() {
                 {selectedSource === 'http' && <><Globe className="w-4 h-4" /> HTTP Stream</>}
                 {selectedSource === 'rtmp' && <><Radio className="w-4 h-4" /> RTMP Stream</>}
                 {selectedSource === 'screen' && <><Monitor className="w-4 h-4" /> Screen Capture</>}
+                {selectedSource === 'scraper' && <><Database className="w-4 h-4" /> Frigate Scraper</>}
                 {selectedSource === 'upload' && <><Upload className="w-4 h-4" /> Upload Photos</>}
                 {selectedSource === 'video_upload' && <><Video className="w-4 h-4" /> Upload Video</>}
                 {selectedSource === 'import' && <><FolderOpen className="w-4 h-4" /> Import from Path</>}
@@ -1108,6 +1301,13 @@ function App() {
                   >
                     <Monitor className="w-4 h-4" />
                     Screen Capture
+                  </button>
+                  <button
+                    onClick={() => { setSelectedSource('scraper'); setSourceDropdownOpen(false); }}
+                    className="w-full px-4 py-2 text-left hover:bg-slate-600 text-slate-100 flex items-center gap-2"
+                  >
+                    <Database className="w-4 h-4" />
+                    Frigate Scraper
                   </button>
                   <button
                     onClick={() => { setSelectedSource('upload'); setSourceDropdownOpen(false); }}
@@ -2274,6 +2474,221 @@ function App() {
                 </a>
               )}
             </div>
+            </div>
+          )}
+
+          {/* Frigate Scraper Tab Content */}
+          {!showSessions && selectedSource === 'scraper' && (
+            <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 border border-white/20">
+              <h2 className="text-xl font-semibold text-white mb-4 flex items-center gap-2">
+                <Database className="w-5 h-5" />
+                Frigate Historical Scraper
+              </h2>
+
+              <div className="space-y-4">
+                {/* Frigate API URL */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-200 mb-2">
+                    Frigate API URL (optional - defaults to the server's FRIGATE_API_URL)
+                  </label>
+                  <input
+                    type="text"
+                    value={scraperApiUrl}
+                    onChange={(e) => setScraperApiUrl(e.target.value)}
+                    placeholder="http://frigate:5000"
+                    className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+
+                {/* Load Cameras Button */}
+                <div>
+                  <button
+                    onClick={loadScraperCameras}
+                    disabled={loadingScraperCameras}
+                    className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white rounded-lg"
+                  >
+                    {loadingScraperCameras ? 'Loading...' : 'Load Cameras'}
+                  </button>
+                </div>
+
+                {/* Camera Selection */}
+                {scraperCameras.length > 0 && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-200 mb-2">
+                      Select Camera
+                    </label>
+                    <select
+                      value={selectedScraperCamera}
+                      onChange={(e) => setSelectedScraperCamera(e.target.value)}
+                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    >
+                      <option value="">Choose a camera...</option>
+                      {scraperCameras.map((camera) => (
+                        <option key={camera.name} value={camera.name}>
+                          {camera.displayName || camera.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Date/Time Range */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-200 mb-2">
+                      Start Date & Time
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={scraperStartIso}
+                      onChange={(e) => setScraperStartIso(e.target.value)}
+                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-200 mb-2">
+                      End Date & Time
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={scraperEndIso}
+                      onChange={(e) => setScraperEndIso(e.target.value)}
+                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                </div>
+
+                {/* Interval and Timezone */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-200 mb-2">
+                      Interval (seconds)
+                    </label>
+                    <input
+                      type="number"
+                      value={scraperInterval}
+                      onChange={(e) => setScraperInterval(parseInt(e.target.value) || 30)}
+                      min="1"
+                      max="3600"
+                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-200 mb-2">
+                      Timezone
+                    </label>
+                    <select
+                      value={scraperTimezone}
+                      onChange={(e) => setScraperTimezone(e.target.value)}
+                      className="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    >
+                      <option value="America/Los_Angeles">America/Los_Angeles</option>
+                      <option value="America/New_York">America/New_York</option>
+                      <option value="America/Chicago">America/Chicago</option>
+                      <option value="Europe/London">Europe/London</option>
+                      <option value="Europe/Paris">Europe/Paris</option>
+                      <option value="Asia/Tokyo">Asia/Tokyo</option>
+                      <option value="UTC">UTC</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Preview Calculation */}
+                <div>
+                  <button
+                    onClick={calculateScraperPreview}
+                    disabled={!scraperStartIso || !scraperEndIso || !scraperInterval}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white rounded-lg"
+                  >
+                    Calculate Preview
+                  </button>
+                </div>
+
+                {scraperPreview && (
+                  <div className="bg-blue-900/30 border border-blue-700 rounded-lg p-4">
+                    <h3 className="text-white font-semibold mb-2">Preview</h3>
+                    <div className="text-sm text-gray-200 space-y-1">
+                      <p><strong>Total Frames:</strong> {scraperPreview.totalFrames}</p>
+                      <p><strong>Duration:</strong> {scraperPreview.durationSeconds}s</p>
+                      <p><strong>Estimated Video:</strong> {scraperPreview.estimatedVideoDuration}s at 30fps</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Start/Stop Buttons */}
+                <div className="flex gap-4">
+                  <button
+                    onClick={startScraper}
+                    disabled={!selectedScraperCamera || !scraperStartIso || !scraperEndIso || !scraperInterval || scraperLoading || (scraperSessionId && !scraperCompleted)}
+                    className="px-6 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 text-white rounded-lg"
+                  >
+                    {scraperLoading ? 'Starting...' : scraperSessionId && !scraperCompleted ? 'Scraping...' : 'Start Scraping'}
+                  </button>
+                  {scraperSessionId && !scraperCompleted && (
+                    <button
+                      onClick={stopScraper}
+                      className="px-6 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg"
+                    >
+                      Stop Scraping
+                    </button>
+                  )}
+                  {scraperCompleted && (
+                    <button
+                      onClick={clearScraperSession}
+                      className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg"
+                    >
+                      New Scrape
+                    </button>
+                  )}
+                </div>
+
+                {/* Status Display */}
+                {scraperStatus && !scraperCompleted && (
+                  <div className="bg-green-900/30 border border-green-700 rounded-lg p-4">
+                    <h3 className="text-white font-semibold mb-2">
+                      {scraperStatus.active && !scraperStatus.completed
+                        ? `Capturing frame ${scraperStatus.progress_current || scraperStatus.completedFrames} of ${scraperStatus.progress_total || scraperStatus.totalFrames}...`
+                        : 'Scraping Status'}
+                    </h3>
+                    <div className="text-sm text-gray-200 space-y-1">
+                      <p><strong>Completed Frames:</strong> {scraperStatus.completedFrames}</p>
+                      <p><strong>Elapsed:</strong> {Math.round(scraperStatus.elapsedMs / 1000)}s</p>
+                      {/* Progress Bar */}
+                      {scraperStatus.progress_total > 0 && (
+                        <div className="mt-3">
+                          <div className="w-full bg-gray-700 rounded-full h-2.5">
+                            <div
+                              className="bg-green-500 h-2.5 rounded-full transition-all duration-300"
+                              style={{ width: `${((scraperStatus.progress_current || scraperStatus.completedFrames) / scraperStatus.progress_total) * 100}%` }}
+                            ></div>
+                          </div>
+                          <p className="text-xs text-gray-400 mt-1">
+                            {Math.round(((scraperStatus.progress_current || scraperStatus.completedFrames) / scraperStatus.progress_total) * 100)}% complete
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Video Player Display */}
+                {scraperCompleted && scraperVideoUrl && (
+                  <div className="bg-purple-900/30 border border-purple-700 rounded-lg p-4">
+                    <h3 className="text-white font-semibold mb-2">Video Ready</h3>
+                    <div className="text-sm text-gray-200 space-y-2">
+                      <p>Your timelapse video has been generated successfully!</p>
+                      <video
+                        src={scraperVideoUrl}
+                        controls
+                        autoPlay
+                        loop
+                        className="w-full max-w-full rounded-lg"
+                        style={{ maxHeight: '500px' }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
