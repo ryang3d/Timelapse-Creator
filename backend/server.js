@@ -608,11 +608,15 @@ function generateVideoForSession(sessionId) {
 
     const codec = videoService.getBestCodec();
     const ffmpegPath = '/usr/bin/ffmpeg';
+    const concatInputOptions = ['-f', 'concat', '-safe', '0', '-r', '30'];
     const inputOptions = [
       ...codec.inputOptions,
-      '-f', 'concat', '-safe', '0',
-      '-r', '30'
+      ...concatInputOptions
     ];
+    // The software fallback must NOT carry the hardware input options
+    // (-vaapi_device ...) or ffmpeg re-initializes the VAAPI device and the
+    // "software" retry fails on hosts where the GPU driver is broken.
+    const softwareInputOptions = concatInputOptions;
 
     const finish = () => {
       try {
@@ -641,8 +645,8 @@ function generateVideoForSession(sessionId) {
       done();
     };
 
-    const run = (outputOptions, isFallback) => {
-      const args = [...inputOptions, '-i', fileListPath, ...outputOptions, '-y', outputFile];
+    const run = (outputOptions, runInputOptions, isFallback) => {
+      const args = [...runInputOptions, '-i', fileListPath, ...outputOptions, '-y', outputFile];
       const proc = spawn(ffmpegPath, args);
       const tag = isFallback ? 'FALLBACK ' : '';
       proc.stdout.on('data', (d) => console.log(`[AutoRender ${tag}STDOUT] ${d.toString().trim()}`));
@@ -659,7 +663,7 @@ function generateVideoForSession(sessionId) {
         }
         if (!isFallback) {
           console.error(`[AutoRender] hardware render failed (code ${code}); retrying with software encoder`);
-          run(['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'fast', '-b:v', '5M'], true);
+          run(['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'fast', '-b:v', '5M'], softwareInputOptions, true);
           return;
         }
         console.error(`[AutoRender] fallback render also failed (code ${code})`);
@@ -673,7 +677,7 @@ function generateVideoForSession(sessionId) {
       });
     };
 
-    run(codec.outputOptions.slice(), false);
+    run(codec.outputOptions.slice(), inputOptions, false);
   });
 }
 
