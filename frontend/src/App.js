@@ -224,7 +224,7 @@ function App() {
     return () => {
       if (wsRef.current) wsRef.current.close();
     };
-  }, [sessionId]);
+  }, [sessionId, scraperSessionId, expandedSessionId]);
 
   const testConnection = async () => {
     setTesting(true);
