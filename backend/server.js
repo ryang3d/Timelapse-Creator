@@ -565,94 +565,116 @@ function broadcast(data) {
 // Uses the same concat filelist + codec tiering as /api/generate-timelapse,
 // with an automatic software fallback for hardware (VAAPI) failures.
 function generateVideoForSession(sessionId) {
-  console.log('[Server] Starting automatic video generation for session:', sessionId);
+  // Returns a Promise that resolves when the render finishes (success, or
+  // both hardware+software attempts failed). The scraper awaits it so the
+  // scrape only reports "completed" once the video actually exists.
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
 
-  const session = db.getSession(sessionId);
-  if (!session) {
-    console.error('[Server] Session not found:', sessionId);
-    return;
-  }
+    console.log('[Server] Starting automatic video generation for session:', sessionId);
 
-  if (session.source_type !== 'frigate_scraper') {
-    console.log('[Server] Not a scraper session, skipping auto-generation');
-    return;
-  }
-
-  const snapshots = db.getSnapshots(sessionId);
-  if (snapshots.length < 2) {
-    console.error('[Server] Insufficient snapshots for video generation');
-    return;
-  }
-
-  const sessionDir = path.join(snapshotsDir, sessionId);
-  const outputFile = path.join(videosDir, `${sessionId}.mp4`);
-  const fileListPath = path.join(sessionDir, `filelist-autogen-${Date.now()}.txt`);
-  const fileList = snapshots
-    .map(s => `file '${path.join(__dirname, s.file_path.replace(/^\//, ''))}'`)
-    .join('\n');
-  fs.writeFileSync(fileListPath, fileList);
-
-  const codec = videoService.getBestCodec();
-  const ffmpegPath = '/usr/bin/ffmpeg';
-  const inputOptions = [
-    ...codec.inputOptions,
-    '-f', 'concat', '-safe', '0',
-    '-r', '30'
-  ];
-
-  const finish = () => {
-    try {
-      const stats = fs.statSync(outputFile);
-      db.addVideo(sessionId, `/videos/${sessionId}.mp4`, 30, 'mp4', { file_size: stats.size });
-    } catch (error) {
-      console.error('Error saving video to database:', error);
+    const session = db.getSession(sessionId);
+    if (!session) {
+      console.error('[Server] Session not found:', sessionId);
+      done();
+      return;
     }
-    db.updateSession(sessionId, {
-      active: 0,
-      completed_at: new Date().toISOString()
-    });
-    if (fs.existsSync(fileListPath)) fs.unlinkSync(fileListPath);
-    if (fs.existsSync(sessionDir)) {
-      console.log(`Cleaning up snapshots folder for scraper session ${sessionId}`);
-      fs.rmSync(sessionDir, { recursive: true, force: true });
-    }
-    broadcast({
-      type: 'timelapse-ready',
-      sessionId,
-      videoUrl: `/videos/${sessionId}.mp4`,
-      format: 'mp4',
-      videoId: `${sessionId}.mp4`
-    });
-  };
 
-  const run = (outputOptions, isFallback) => {
-    const args = [...inputOptions, '-i', fileListPath, ...outputOptions, '-y', outputFile];
-    const proc = spawn(ffmpegPath, args);
-    const tag = isFallback ? 'FALLBACK ' : '';
-    proc.stdout.on('data', (d) => console.log(`[AutoRender ${tag}STDOUT] ${d.toString().trim()}`));
-    proc.stderr.on('data', (d) => console.log(`[AutoRender ${tag}STDERR] ${d.toString().trim()}`));
-    proc.on('error', (err) => console.error('[AutoRender] spawn error:', err));
-    proc.on('close', (code) => {
-      if (code === 0) {
-        finish();
-        return;
+    if (session.source_type !== 'frigate_scraper') {
+      console.log('[Server] Not a scraper session, skipping auto-generation');
+      done();
+      return;
+    }
+
+    const snapshots = db.getSnapshots(sessionId);
+    if (snapshots.length < 2) {
+      console.error('[Server] Insufficient snapshots for video generation');
+      done();
+      return;
+    }
+
+    const sessionDir = path.join(snapshotsDir, sessionId);
+    const outputFile = path.join(videosDir, `${sessionId}.mp4`);
+    const fileListPath = path.join(sessionDir, `filelist-autogen-${Date.now()}.txt`);
+    const fileList = snapshots
+      .map(s => `file '${path.join(__dirname, s.file_path.replace(/^\//, ''))}'`)
+      .join('\n');
+    fs.writeFileSync(fileListPath, fileList);
+
+    const codec = videoService.getBestCodec();
+    const ffmpegPath = '/usr/bin/ffmpeg';
+    const inputOptions = [
+      ...codec.inputOptions,
+      '-f', 'concat', '-safe', '0',
+      '-r', '30'
+    ];
+
+    const finish = () => {
+      try {
+        const stats = fs.statSync(outputFile);
+        db.addVideo(sessionId, `/videos/${sessionId}.mp4`, 30, 'mp4', { file_size: stats.size });
+      } catch (error) {
+        console.error('Error saving video to database:', error);
       }
-      if (!isFallback) {
-        console.error(`[AutoRender] hardware render failed (code ${code}); retrying with software encoder`);
-        run(['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'fast', '-b:v', '5M'], true);
-        return;
-      }
-      console.error(`[AutoRender] fallback render also failed (code ${code})`);
-      if (fs.existsSync(fileListPath)) fs.unlinkSync(fileListPath);
-      broadcast({
-        type: 'render-failed',
-        sessionId,
-        message: 'Video rendering failed after hardware and software attempts'
+      db.updateSession(sessionId, {
+        active: 0,
+        completed_at: new Date().toISOString()
       });
-    });
-  };
+      if (fs.existsSync(fileListPath)) fs.unlinkSync(fileListPath);
+      if (fs.existsSync(sessionDir)) {
+        console.log(`Cleaning up snapshots folder for scraper session ${sessionId}`);
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+        db.deleteSnapshotsForSession(sessionId);
+      }
+      broadcast({
+        type: 'timelapse-ready',
+        sessionId,
+        videoUrl: `/videos/${sessionId}.mp4`,
+        format: 'mp4',
+        videoId: `${sessionId}.mp4`
+      });
+      done();
+    };
 
-  run(codec.outputOptions.slice(), false);
+    const run = (outputOptions, isFallback) => {
+      const args = [...inputOptions, '-i', fileListPath, ...outputOptions, '-y', outputFile];
+      const proc = spawn(ffmpegPath, args);
+      const tag = isFallback ? 'FALLBACK ' : '';
+      proc.stdout.on('data', (d) => console.log(`[AutoRender ${tag}STDOUT] ${d.toString().trim()}`));
+      proc.stderr.on('data', (d) => console.log(`[AutoRender ${tag}STDERR] ${d.toString().trim()}`));
+      proc.on('error', (err) => {
+        console.error('[AutoRender] spawn error:', err);
+        done();
+      });
+      proc.on('close', (code) => {
+        if (settled) return;
+        if (code === 0) {
+          finish();
+          return;
+        }
+        if (!isFallback) {
+          console.error(`[AutoRender] hardware render failed (code ${code}); retrying with software encoder`);
+          run(['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'fast', '-b:v', '5M'], true);
+          return;
+        }
+        console.error(`[AutoRender] fallback render also failed (code ${code})`);
+        if (fs.existsSync(fileListPath)) fs.unlinkSync(fileListPath);
+        broadcast({
+          type: 'render-failed',
+          sessionId,
+          message: 'Video rendering failed after hardware and software attempts'
+        });
+        done();
+      });
+    };
+
+    run(codec.outputOptions.slice(), false);
+  });
 }
 
 // Initialize the scraper service (after db, broadcast, and
@@ -1226,6 +1248,7 @@ app.post('/api/generate-timelapse', (req, res) => {
             if (isScraper && fs.existsSync(sessionDir)) {
               console.log(`Cleaning up snapshots folder for scraper session ${sessionId}`);
               fs.rmSync(sessionDir, { recursive: true, force: true });
+              db.deleteSnapshotsForSession(sessionId);
             }
 
             broadcast({
@@ -1310,6 +1333,7 @@ app.post('/api/generate-timelapse', (req, res) => {
         if (isScraper && fs.existsSync(sessionDir)) {
           console.log(`Cleaning up snapshots folder for scraper session ${sessionId}`);
           fs.rmSync(sessionDir, { recursive: true, force: true });
+          db.deleteSnapshotsForSession(sessionId);
         }
 
         broadcast({
@@ -1365,6 +1389,7 @@ app.post('/api/generate-timelapse', (req, res) => {
             if (fs.existsSync(sessionDir)) {
               console.log(`Cleaning up snapshots folder for scraper session ${sessionId}`);
               fs.rmSync(sessionDir, { recursive: true, force: true });
+              db.deleteSnapshotsForSession(sessionId);
             }
             broadcast({
               type: 'timelapse-ready',
@@ -1433,6 +1458,7 @@ app.post('/api/generate-timelapse', (req, res) => {
         if (isScraper && fs.existsSync(sessionDir)) {
           console.log(`Cleaning up snapshots folder for scraper session ${sessionId}`);
           fs.rmSync(sessionDir, { recursive: true, force: true });
+          db.deleteSnapshotsForSession(sessionId);
         }
 
         broadcast({

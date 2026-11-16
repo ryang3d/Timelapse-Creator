@@ -254,12 +254,10 @@ class ScraperService {
           headers,
           rejectUnauthorized: isHttps ? false : undefined
         }, (res) => {
-          if (res.statusCode === 404 || res.statusCode === 422) {
-            reject(new Error(`HTTP ${res.statusCode}: ${res.statusMessage}`));
-            return;
-          }
-
           if (res.statusCode !== 200) {
+            // 404 is the normal spiral-search miss: drain the body so the
+            // socket can be reused instead of being closed per miss.
+            res.resume();
             reject(new Error(`HTTP ${res.statusCode}: ${res.statusMessage}`));
             return;
           }
@@ -285,6 +283,11 @@ class ScraperService {
           });
 
           fileStream.on('error', (error) => {
+            // A partial write left a truncated frame; remove it so the next
+            // retry starts clean.
+            try {
+              if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+            } catch (e) { /* already gone */ }
             reject(error);
           });
         });

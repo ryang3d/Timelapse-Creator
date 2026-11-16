@@ -343,6 +343,12 @@ class DatabaseManager {
     `).all(sessionId);
   }
 
+  deleteSnapshotsForSession(sessionId) {
+    return this.db.prepare(`
+      DELETE FROM snapshots WHERE session_id = ?
+    `).run(sessionId);
+  }
+
   // Video management
   addVideo(sessionId, filePath, fps, format = 'mp4', metadata = {}) {
     const stmt = this.db.prepare(`
