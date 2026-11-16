@@ -29,7 +29,10 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_TOKEN }}
+          # GHCR_TOKEN: dedicated PAT (used by the Gitea mirror runner, where the
+          # built-in GITHUB_TOKEN is Gitea-scoped). Falls back to GITHUB_TOKEN on
+          # GitHub, where permissions.packages: write makes it valid for GHCR.
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Build and push backend image
         uses: docker/build-push-action@v6
